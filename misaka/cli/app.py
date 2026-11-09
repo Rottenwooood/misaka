@@ -45,6 +45,16 @@ def _parser(extension_commands=None):
                     help="add: a card this one waits for (repeatable)")
 
     sub.add_parser("board", help="Show the task board")
+
+    view = sub.add_parser("view", help="Read-only views; no model or project initialization")
+    view.add_argument("view_kind", choices=["tasks"])
+    view.add_argument("--project", action="append", metavar="DIR",
+                      help="Project to display; repeat for multiple projects (default: cwd)")
+    mode = view.add_mutually_exclusive_group()
+    mode.add_argument("--json", action="store_true", help="Print one diagnostic snapshot as JSON")
+    mode.add_argument("--snapshot", nargs=2, type=int, metavar=("COLS", "ROWS"),
+                      help="Print one terminal frame as plain text")
+    mode.add_argument("--pane", action="store_true", help="Open in the existing Panel as a normal PTY pane")
     sub.add_parser("allies", help="List the enabled allies and whether each can take a card (spends no quota)")
 
     dmp = sub.add_parser("dm", help="Deliver a message to an agent's contact session and run one turn "
@@ -442,6 +452,11 @@ def _task_start(con, task_id):
     after = db.get(con, task_id)
     print(f"Card {task_id}: {after['status'] if after else 'gone'}.")
     return 0 if ran else 1
+
+
+def _cmd_view(args):
+    from misaka.cli.view import run
+    return run(args)
 
 
 def _cmd_board(args):
@@ -908,6 +923,7 @@ COMMANDS = {
     "dm": _cmd_dm,
     "task": _cmd_task,
     "board": _cmd_board,
+    "view": _cmd_view,
     "research": _cmd_research,
     "usage": _cmd_usage,
     "web": _cmd_web,
@@ -922,6 +938,10 @@ def main(argv=None):
     """The CLI entry point: one handler per sub-command (``COMMANDS``), each opening the board only
     if it uses it; ``argv`` defaults to the process arguments so tests can drive it directly."""
     argv = list(sys.argv[1:] if argv is None else argv)
+    # A viewer must also work on an uninitialized or broken home, without seeding
+    # profiles, creating logs/databases or installing model metering hooks.
+    if argv[:1] == ["view"]:
+        return _cmd_view(_parser().parse_args(argv))
     # setup, update and uninstall must still run on a settings.json that stops everything else.
     bootstrap.install(check_settings=argv[:1] not in (["setup"], ["update"], ["uninstall"]))
     from misaka.config import env as env_file
