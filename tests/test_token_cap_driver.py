@@ -31,7 +31,6 @@ async def test_a_driver_reads_the_cap_as_its_cards_do(board, monkeypatch, tmp_pa
     poll, for ever."""
     con = board.con
     (tmp_path / "profiles" / "10032").mkdir(parents=True)
-    monkeypatch.setattr(dispatch, "_profile_dir", lambda cfg, who: str(tmp_path / "profiles" / who))
     monkeypatch.setattr(workflow, "_roster_check", lambda *a, **k: asyncio.sleep(0))
     monkeypatch.setattr(budget, "default_cap", lambda: 1_000)          # settings.json, as edited
     budget.settle_request(con, None, board.run, 1, 1_000)

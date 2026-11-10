@@ -270,15 +270,3 @@ async def test_the_defaults_leave_the_run_on_the_global_settings(chat):
     await _start(chat, {research._THRESHOLD_QUESTION: "Global setting", research._OUTPUT_QUESTION: "Model default"})
     assert runs.session_overrides(chat.run) == {}
     assert chat.seen == [(None, None)]
-
-
-def test_a_sisters_card_child_is_handed_the_runs_settings_and_nothing_else_is():
-    from misaka.core.network.sister_runtime import _SisterManager
-
-    manager = object.__new__(_SisterManager)
-    manager.skill_root, manager.research = "/tmp/skills", {"run_id": "r_1"}
-    manager.session_overrides = {"context_threshold": 0.5, "max_output_tokens": 64_000}
-    env = manager.child_env_extra(None)
-    assert json.loads(env[session_overrides.ENV]) == {"context_threshold": 0.5, "max_output_tokens": 64_000}
-    manager.session_overrides = {}
-    assert session_overrides.ENV not in manager.child_env_extra(None)

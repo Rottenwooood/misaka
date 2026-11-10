@@ -33,13 +33,9 @@ def dm_dir(role: str) -> str:
 
 
 def card_session_dir(task) -> str:
-    """One immutable storage address per card; resetting its runtime does not reset this.
-
-    Newly allocated cards use their id, independent of assignee and execution workspace.
-    A persisted address is authoritative (including existing directories retained in place).
-    """
-    directory = task["session_dir"] if "session_dir" in task.keys() else None  # noqa: SIM118 - sqlite3.Row membership checks values
-    return directory or os.path.join(sessions_root(), "cards", str(task["id"]))
+    """A card uses its execution instance's one conversation namespace."""
+    from misaka.core.platform.instances import session_dir
+    return session_dir(task["instance_id"])
 
 
 def subagent_session_dir(parent_id: str, parent_file: str | None = None) -> str:

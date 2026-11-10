@@ -1,51 +1,28 @@
-"""Addressable Sister lifecycle for Last Order.
+"""Last Order's client of daemon-owned Sister execution.
 
-Last Order never receives the generic ``Agent`` tool family.  This module
-reuses that process/transcript runtime behind a roster-bound facade, while the
-board remains the source of truth and the card lifecycle hook owns settlement.
+Closing a coordinator never owns or cancels the Sisters it dispatched. Native
+conversations belong to instances; the daemon owns card PTYs and claims.
 """
-
-from __future__ import annotations
-
 import asyncio
 import json
 import os
-import secrets
 import socket
-import time
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
-from pathlib import Path
+from collections.abc import Mapping
+from contextlib import closing
 from typing import Any
 from xml.sax.saxutils import escape
 
 import psutil
 
-from misaka.config import profiles
-from misaka.config import sessions as session_roots
-from misaka.core.network import worker
-from misaka.core.platform import admission, budget, notifications
+from misaka.core.platform import admission, notifications
 from misaka.core.platform import processes as process_tree
 from misaka.core.platform import tasks as db
-from misaka.core.session_manager import find_most_recent_session
-from misaka.core.skills import sandbox as skill_sandbox
-from misaka.core.subagent.agents import AgentDefinition
-from misaka.core.subagent.runtime import (
-    AgentTask,
-    RoleContext,
-    SubagentManager,
-    clean_resume_transcript,
-)
+from misaka.core.subagent.child import PROCESS_GROUP_IDENTITY
 
 TERMINAL_BOARD_STATUSES = frozenset({"done", "failed", "stopped", "blocked", "triage"})
 ACTIVE_BOARD_STATUSES = frozenset({"running", "review"})
-# `output`'s fallback tick. A run this process owns wakes it through `handle.done`; the poll
-# is only there for a card another process settles, so it is a backstop, not the mechanism.
+# Blocking output reads poll durable state; this client owns no execution handle.
 _OUTPUT_POLL_SECONDS = 1.0
-_HEARTBEAT_SECONDS = 60.0
-from misaka.core.subagent.child import (
-    PROCESS_GROUP_IDENTITY,  # single source of truth for the wire constant
-)
 
 STATUS_MAP = {
     "ready": "pending",
@@ -58,16 +35,6 @@ STATUS_MAP = {
     "triage": "blocked",
     "stopped": "killed",
 }
-
-
-def _admission_limits():
-    host, assignee = admission.limits()
-    return {"host_cap": host, "assignee_cap": assignee}
-
-
-def _process_identity(pid: int | None) -> str | None:
-    """Return a PID-reuse-resistant local process identity when available."""
-    return process_tree.identity(pid)
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -178,20 +145,6 @@ def transcript_tail(session_file: str, limit: int = 40) -> str | None:
     return "\n".join(out[-max(1, int(limit)):]) or None
 
 
-def _adoptable_transcript(task) -> str | None:
-    """Return the card's most recent session transcript if it can be cleaned for resumption, else None.
-
-    ``task`` is the board row: its storage directory does not follow a moving worktree."""
-    found = find_most_recent_session(session_roots.card_session_dir(task))
-    if not found:
-        return None
-    try:
-        clean_resume_transcript(found)
-    except ValueError:
-        return None
-    return found
-
-
 def _research_run_active(con, research: Mapping[str, Any] | None) -> bool:
     """Whether the research run a card belongs to still has a driver reading its results."""
     from misaka.core.research import runs
@@ -229,952 +182,89 @@ def _sister_notification(data: Mapping[str, Any]) -> str:
     )
 
 
-class _SisterManager(SubagentManager):
-    """One manager per board card: a stable side session that outlives any Last Order chat session."""
-
-    def __init__(self, session: Any, cfg: Mapping[str, Any], row: Mapping[str, Any], workspace: str):
-        self.cfg = cfg
-        self.board_id = str(row["id"])
-        self.sister = str(row["assignee"])
-        self.profile_dir = os.path.join(str(cfg["profiles_root"]), self.sister)
-        self.output_dir = str(row["output_dir"] or workspace)
-        state_dir = Path(db.task_state_dir(self.board_id))
-        self.runtime_dir = Path(session_roots.card_session_dir(row))
-        self.skill_root_base = str(state_dir / ".skills-ro" / "sister")
-        # A generation is a board-result epoch, not an ownership epoch: an
-        # abandoned running card is reclaimed without incrementing it.  Give
-        # every manager its own copy root so a late old owner can only clean up
-        # its own files after a same-generation takeover.
-        self.skill_scope = secrets.token_hex(8)
-        self.skill_root = os.path.join(
-            self.skill_root_base,
-            f"g{int(row['generation'])}-{self.skill_scope}",
-        )
-        self.beast = False
-        self.research = dict(row).get("_research")
-        self.session_overrides = dict(row).get("_session_overrides") or {}
-        from misaka.core.model_resolver import findExactModelReferenceMatch
-        from misaka.core.subagent.model import (
-            normalize_model_for_api,
-            resolve_model_spec,
-        )
-
-        registry = session.modelRegistry
-        models = registry.getAll()
-        override = profiles.explicit_model_override(self.profile_dir, row["model"])
-        normalized = normalize_model_for_api(override or "")
-        explicit = findExactModelReferenceMatch(normalized, models)
-        self.thinking_override = None
-        if override and explicit is None:
-            from misaka.cli.args import is_valid_thinking_level
-
-            prefix, separator, level = override.rpartition(":")
-            if separator and is_valid_thinking_level(level):
-                # Keep native :level overrides separate from registry model IDs.
-                override, self.thinking_override = prefix, level
-                normalized = normalize_model_for_api(override)
-                explicit = findExactModelReferenceMatch(normalized, models)
-        if explicit and normalized.casefold() == f"{explicit.provider}/{explicit.id}".casefold():
-            # An explicit complete pair can repair a launch even while the old
-            # profile pin is malformed, unknown or ambiguous.
-            parent = explicit
-        else:
-            reference = profiles.pinned_model(self.profile_dir, strict=True)
-            if not reference or reference == "inherit":
-                reference = f"{cfg['provider']}/{cfg['default_model']}"
-            canonical = profiles.resolve_model_reference(
-                reference, registry,
-                fallback_provider=cfg["provider"] if reference == cfg["default_model"] else None,
-            )
-            provider, model_id = canonical.split("/", 1)
-            parent = {"provider": provider, "id": model_id}
-        # Preserve native aliases/inherit and bare-ID endpoint semantics, but
-        # inherit from this Sister's pair rather than Last Order's model.
-        provider, model_id = resolve_model_spec({}, override, None, parent, models)
-        self.model = f"{provider}/{model_id}"
-        selected = registry.find(provider, normalize_model_for_api(model_id))
-        if selected is None:
-            raise ValueError(f"Unknown Sister model: {self.model}")
-        if not registry.hasConfiguredAuth(selected):
-            # The generic runtime resolves against authenticated providers. An
-            # absent provider there must not turn this pin into a bare LO ID.
-            raise ValueError(f"No configured authentication for Sister model: {self.model}")
-        role = profiles.role_of(self.profile_dir)
-        super().__init__(
-            session,
-            RoleContext(
-                role=role,
-                profile_dir=self.profile_dir,
-                workspace=workspace,
-                mcp_role=role,
-                # Continuations must keep the Sister's model instead of
-                # silently inheriting Last Order's model.
-                model_override=self.model,
-                usage_db=str(cfg["db"]),
-                usage_task_id=self.board_id,
-                usage_generation=int(row["generation"]),
-                usage_claim_lock=row["claim_lock"],
-                usage_token_cap=int(cfg.get("token_cap") or 0),
-            ),
-        )
-
-    @property
-    def agent_type(self) -> str:
-        return f"sister-{self.sister}"
-
-    def _who(self, task):
-        return self.sister                   # mail is addressed to "10032", never to the agent type
-
-    def workspace_ready(self, row):
-        return os.path.isdir(db.workspace_for(row))
-
-    def _session_dir(self, _context: Any) -> Path:
-        if self._parent_session_id not in (None, self.board_id):
-            raise RuntimeError("A Sister manager cannot be shared between board cards")
-        self.runtime_dir.mkdir(parents=True, exist_ok=True)
-        self._metadata_dir = self.runtime_dir
-        self._parent_session_id = self.board_id
-        return self.runtime_dir
-
-    def resolve_definition(self, requested: str | None, cwd: str) -> AgentDefinition:
-        if requested not in (None, self.agent_type, "general", "general-purpose"):
-            raise ValueError(f"Sister card cannot change identity to {requested!r}")
-        # Identity comes first, followed by mandatory role instructions.
-        from misaka.config import identity
-        from misaka.core.resource_loader import resolve_prompt_input
-        soul = "\n\n".join(
-            resolve_prompt_input(source, "role system prompt")
-            for source in identity.base_prompt_sources(self.profile_dir,
-                                                        profiles.role_of(self.profile_dir)))
-        # The same stack a card in a pane sees (project, role, shared), as read-only copies.
-        skill_sandbox.snapshot_stack(self.profile_dir, cwd or self.role_context.workspace, self.skill_root)
-        return AgentDefinition(
-            name=self.agent_type,
-            description=f"MISAKA Sister {self.sister}",
-            prompt=soul,
-            source="misaka-sister",
-            tools=[] if self.beast else None,
-            model="inherit",
-            permission_mode="acceptEdits",
-        )
-
-    async def _child_flags(self, task: AgentTask) -> list[str]:
-        # A Board Sister is a role session, not a custom-prompt generic child.
-        # Keep the saved personality but use the normal builder for active tools'
-        # guidance, just like a pane/headless card. The generic runtime is unchanged.
-        flags = await super()._child_flags(task)
-        # A Sister root follows native defaults/resume, not generic children's forced off.
-        if "--thinking" in flags:
-            index = flags.index("--thinking")
-            del flags[index:index + 2]
-        if (thinking := getattr(self, "thinking_override", None)) is not None:
-            flags += ["--thinking", thinking]
-        flags[flags.index("--system-prompt")] = "--append-system-prompt"
-        from misaka.config.identity import COMMON_CHARTER, SISTER_ROLE
-        # Older persisted definitions predate the independent duty sections.
-        # Add current duties at launch without rewriting their saved personality.
-        for section in (COMMON_CHARTER, SISTER_ROLE):
-            if section not in task.definition.prompt:
-                flags += ["--append-system-prompt", section]
-        return flags
-
-    def child_env_extra(self, _task: AgentTask) -> dict[str, str]:
-        # The child indexes the read-only copies this manager made, never the live trees.
-        from misaka.core import session_overrides
-
-        return {"MISAKA_SKILL_SANDBOX": self.skill_root,
-                "MISAKA_RESEARCH_CONTEXT": "1" if self.research else "0",
-                # The run's compaction threshold and output limit, for this Sister's session only.
-                **session_overrides.to_env(getattr(self, "session_overrides", None))}
-
-    def _child_tool_vocabulary(self) -> list[str] | None:
-        """A Sister card is a root of her own, not a worker inside Last Order's pool.
-
-        The child this manager starts assembles its tools from the Sister's
-        profile -- her extensions and her MCP servers -- which is neither a
-        subset nor a superset of Last Order's.  Handing Last Order's names down
-        would both authorise names this session never had and, by intersection,
-        erase the Sister's own tools from every agent she launches.
-        """
-
-        return None
-
-    async def process_started(self, _task: AgentTask, process: Any) -> None:
-        """Publish the real Sister child identity before it can outlive LO."""
-
-        claim_lock = self.role_context.usage_claim_lock
-        generation = self.role_context.usage_generation
-        if not claim_lock or generation is None:
-            raise RuntimeError("Sister process started without a board ownership lease")
-        if os.name == "posix" and os.getpgid(process.pid) != process.pid:
-            raise RuntimeError("Sister root did not receive an isolated process group")
-        process_identity = _process_identity(process.pid)
-        if not process_identity:
-            raise RuntimeError("Could not establish Sister process identity")
-        con = db.connect(str(self.cfg["db"]))
-        try:
-            if not db.set_pid(
-                con,
-                self.board_id,
-                process.pid,
-                PROCESS_GROUP_IDENTITY + process_identity,
-                generation=generation,
-                claim_lock=claim_lock,
-            ):
-                raise RuntimeError("Sister ownership was revoked during process start")
-        finally:
-            con.close()
-
-    def _durable_child_environment(self, _task: AgentTask) -> dict[str, str]:
-        claim_lock = self.role_context.usage_claim_lock
-        generation = self.role_context.usage_generation
-        if not claim_lock or generation is None:
-            raise RuntimeError("Sister process started without a board ownership lease")
-        return {
-            "MISAKA_SISTER_OWNER_DB": str(self.cfg["db"]),
-            "MISAKA_SISTER_OWNER_TASK_ID": self.board_id,
-            "MISAKA_SISTER_OWNER_GENERATION": str(generation),
-            "MISAKA_SISTER_OWNER_CLAIM_LOCK": claim_lock,
-            "MISAKA_TASK_OUTPUT_DIR": self.output_dir,
-        }
-
-    def _child_starts_new_session(self, _task: AgentTask) -> bool:
-        return os.name == "posix"
-
-
-@dataclass(slots=True)
-class SisterHandle:
-    board_id: str
-    sister: str
-    manager: _SisterManager | None
-    agent: AgentTask | None
-    context: Any
-    generation: int = 1
-    claim_lock: str | None = None
-    done: asyncio.Event = field(default_factory=asyncio.Event)
-    supervisor: asyncio.Task[None] | None = None
-    stop_requested: bool = False
-    stalled: str | None = None      # why a wedged turn was stopped, until the supervisor records it
-    state_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
-    run_token: object = field(default_factory=object, repr=False)
-
-
-class _CountingSemaphore(asyncio.Semaphore):
-    """asyncio.Semaphore that can report its free slots (the stdlib keeps the count private)."""
-
-    @property
-    def available(self) -> int:
-        return max(0, self._value)
-
 class SisterRuntime:
-    """Session-local supervisor backed by durable board rows and transcripts."""
-
-    def __init__(self, session: Any, con_factory: Any, cfg_factory: Any):
-        # The session this runtime serves; None until the part that owns it is attached.
+    def __init__(self, session, con_factory, cfg_factory):
         self.session = session
-        self._con_factory = con_factory
-        self._cfg_factory = cfg_factory
-        self._handles: dict[str, SisterHandle] = {}
-        self._lock = asyncio.Lock()
-        self._sister_semaphore = _CountingSemaphore(admission.limits()[0])
-        self._owner_identity = _process_identity(os.getpid())
-        self._owned_claims: set[str] = set()
-        self._closing = False
+        self._con_factory, self._cfg_factory = con_factory, cfg_factory
 
     @property
     def con(self):
         return self._con_factory()
 
     @property
-    def cfg(self) -> Mapping[str, Any]:
+    def cfg(self):
         return self._cfg_factory()
 
-    def _workspace(self, task_id: str) -> str:
-        row = db.get(self.con, task_id)
-        if row is None:
-            raise ValueError(f"Card not found: {task_id}")
-        return db.workspace_for(row)
-
     @staticmethod
-    def _begin_run(handle: SisterHandle, generation: int, claim_lock: str | None) -> tuple[object, asyncio.Event]:
-        """Install a new handle epoch and return its immutable completion pair."""
-        handle.generation = int(generation)
-        if handle.manager and hasattr(handle.manager, "role_context"):
-            if hasattr(handle.manager, "skill_root_base") and hasattr(
-                handle.manager, "skill_scope"
-            ):
-                next_skill_root = os.path.join(
-                    handle.manager.skill_root_base,
-                    f"g{int(generation)}-{handle.manager.skill_scope}",
-                )
-                if next_skill_root != handle.manager.skill_root:
-                    skill_sandbox.cleanup(handle.manager.skill_root)
-                    handle.manager.skill_root = next_skill_root
-            handle.manager.role_context = replace(
-                handle.manager.role_context,
-                usage_generation=int(generation),
-                usage_claim_lock=claim_lock,
-            )
-        handle.claim_lock = claim_lock
-        handle.done = asyncio.Event()
-        handle.stop_requested = False
-        handle.run_token = object()
-        return handle.run_token, handle.done
+    async def _request(method, params):
+        from misaka.ui.panel import client as net
+        await asyncio.to_thread(net.ensure)
+        return await asyncio.to_thread(net.request, method, params)
 
-    @staticmethod
-    def _is_current(handle: SisterHandle, token: object) -> bool:
-        return handle.run_token is token
+    def _reconcile(self, task_ids=None, workspace=None):
+        from misaka.core.network.dispatch import reconcile
+        reconcile(self.con, self.cfg, task_ids=task_ids, workspace=workspace)
 
-    def _row_for_run(
-        self, handle: SisterHandle, token: object
-    ) -> Mapping[str, Any] | None:
-        if not self._is_current(handle, token):
-            return None
-        row = db.get(self.con, handle.board_id)
-        if row is None or int(row["generation"]) != handle.generation:
-            return None
-        return row
+    async def launch(self, task_id, *, context, tool_call_id, on_update=None):
+        await asyncio.to_thread(self._reconcile, [task_id])
+        params = {"task_id": task_id}
+        if pane := os.environ.get("MISAKA_NET_PANE"):
+            params["place"] = {"grid": pane}
+        result = await self._request("pane.run_card", params)
+        return self.snapshot(task_id, launched=True) | {"pane": result["pane_id"]}
 
-    def _event(
-        self, handle: SisterHandle, kind: str, payload: Any = None
-    ) -> bool:
-        return db.add_event(
-            self.con,
-            handle.board_id,
-            kind,
-            payload,
-            generation=handle.generation,
-        )
-
-    def _owned_event(
-        self,
-        handle: SisterHandle,
-        claim_lock: str,
-        kind: str,
-        payload: Any = None,
-    ) -> bool:
-        """Append output only while this exact running lease still owns it."""
-        return db.add_event(
-            self.con,
-            handle.board_id,
-            kind,
-            payload,
-            generation=handle.generation,
-            claim_lock=claim_lock,
-        )
-
-    def _owns_running(self, handle: SisterHandle, row: Mapping[str, Any]) -> bool:
-        expires = row["claim_expires"]
-        return bool(
-            handle.claim_lock
-            and handle.claim_lock in self._owned_claims
-            and row["status"] == "running"
-            and row["claim_lock"] == handle.claim_lock
-            and expires is not None
-            and int(expires) >= int(time.time())
-        )
-
-    def _reconcile(self, task_ids: list[str] | None, workspace: str | None = None) -> None:
-        """Recover cards whose owner is dead or wedged before starting new ones.
-
-        The one reconciler (``dispatch.reconcile``) matches each card's exact ownership
-        fence: lease expiry alone is not proof of death, since a paused-but-live Last
-        Order may still own a Sister child that is writing its transcript and workspace.
-        """
-        from misaka.core.network import dispatch
-        dispatch.reconcile(self.con, self.cfg, task_ids=task_ids, workspace=workspace)
-
-    def _prepare_card(self, row: Mapping[str, Any]) -> dict[str, Any] | None:
-        from misaka.core.platform import cards
-        task = dict(row)
-        base = row["workspace"] or self._workspace(row["id"])
-        task["_attachments"] = cards.attachment_list(self.con, base, row["id"])
-        task["_handoffs"] = worker.card_handoffs(self.con, row)
-        task.update(worker.card_extras(self.con, row, self.cfg))
-        reading = budget.status(self.con, self.cfg.get("token_cap"), task_id=row["id"])
-        if reading["mode"] == "stop":
-            if db.back_to_ready(
-                self.con,
-                row["id"],
-                generation=row["generation"],
-                claim_lock=row["claim_lock"],
-            ):
-                db.add_event(
-                    self.con,
-                    row["id"],
-                    "budget_stop",
-                    reading,
-                    generation=row["generation"],
-                )
-            return None
-        if reading["mode"] == "beast":
-            task["beast"] = True
-            db.add_event(self.con, row["id"], "beast_mode", reading)
-        return task
-
-    async def launch(
-        self,
-        task_id: str,
-        *,
-        context: Any,
-        tool_call_id: str,
-        on_update: Any = None,
-    ) -> dict[str, Any]:
-        """Claim and start one ready card; return before the model turn ends."""
-        async with self._lock:
-            if self._closing:
-                raise RuntimeError("Sister runtime is closing")
-            await asyncio.to_thread(self._reconcile, [task_id])
-            row = db.get(self.con, task_id)
-            if row is None:
-                raise ValueError(f"Card not found: {task_id}")
-            existing = self._handles.get(task_id)
-            if (
-                existing
-                and not existing.done.is_set()
-                and existing.generation == int(row["generation"])
-            ):
-                return self.snapshot(task_id, launched=False, note="already running")
-            if row["status"] != "ready":
-                raise ValueError(f"Card {task_id} is not ready (current status: {row['status']}).")
-            from misaka.core.network.ally import presets
-            if row["assignee"] in presets.names():
-                # An ally's runner is a program of its own, not a subagent of this session: the
-                # daemon hosts it in a pane, with or without a panel to show it.
-                from misaka.ui.panel import client as net
-                await asyncio.to_thread(net.ensure)
-                out = await asyncio.to_thread(net.request, "pane.run_card", {"task_id": task_id})
-                return {"task_id": task_id, "sister": row["assignee"], "status": "running",
-                        "pane": out["pane_id"]}
-            profile = os.path.join(str(self.cfg["profiles_root"]), row["assignee"])
-            if not os.path.isdir(profile):
-                raise ValueError(f"Sister {row['assignee']} is not in the roster.")
-            lock = f"lo:{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
-            generation = int(row["generation"])
-            if not db.claim(
-                self.con,
-                task_id,
-                lock,
-                generation=generation,
-                pid=os.getpid(),
-                worker_identity=self._owner_identity,
-                **_admission_limits(),
-            ):
-                raise ValueError(db.claim_refusal(task_id)
-                                 or f"Card {task_id} was claimed by another dispatcher.")
-            self._owned_claims.add(lock)
-            workspace = db.workspace_for(row)
-            try:
-                if not os.path.isdir(workspace):
-                    db.block_task(self.con, task_id, "needs_input", f"the project folder no longer exists: {workspace}",
-                                  generation=generation)
-                    raise RuntimeError(f"Card {task_id}: its folder {workspace} no longer exists.")
-                if not row["workspace"] and not db.set_workspace(
-                    self.con,
-                    task_id,
-                    workspace,
-                    generation=generation,
-                    claim_lock=lock,
-                ):
-                    raise RuntimeError("The task claim expired.")
-            except BaseException:
-                db.back_to_ready(
-                    self.con,
-                    task_id,
-                    generation=generation,
-                    claim_lock=lock,
-                )
-                raise
-            db.add_event(
-                self.con,
-                task_id,
-                "claimed",
-                {"lock": lock, "workspace": workspace, "runtime": "sister"},
-                generation=generation,
-            )
-            manager: _SisterManager | None = None
-            handle: SisterHandle | None = None
-            agent: AgentTask | None = None
-            resumed = bool(row["agent_id"] and row["workspace"])
-            try:
-                prepared = self._prepare_card(db.get(self.con, task_id))
-                if prepared is None:
-                    raise RuntimeError("The token budget limit has been reached; the card remains ready.")
-                prompt = worker.card_prompt(prepared)
-                if resumed:
-                    try:
-                        handle = existing or await self._restore(task_id, context)
-                        manager, agent = handle.manager, handle.agent
-                        if not manager or not agent:
-                            raise RuntimeError("The Sister session is incomplete.")
-                        manager.beast = bool(prepared.get("beast"))
-                        manager.research = prepared.get("_research")
-                        manager.session_overrides = prepared.get("_session_overrides") or {}
-                        await manager.send_message(
-                            agent.id,
-                            prompt,
-                            context=context,
-                            notify=False,
-                        )
-                    except ValueError as error:
-                        detail = str(error).casefold()
-                        broken = any(
-                            marker in detail
-                            for marker in (
-                                "transcript does not exist",
-                                "transcript is empty",
-                                "no valid session header",
-                                "transcript is malformed",
-                                "has no sister session log",
-                                "session path does not match the board record",
-                            )
-                        )
-                        if not broken:
-                            raise
-                        session_root = Path(session_roots.card_session_dir(row))
-                        metadata = getattr(agent, "metadata_path", None) or next(
-                            (candidate for candidate in (
-                                session_root / f"agent-{row['agent_id']}.meta.json",
-                            ) if candidate.exists()),
-                            None,
-                        )
-                        if isinstance(metadata, Path) and metadata.exists():
-                            quarantine = metadata.with_name(
-                                f"{metadata.name}.broken-{secrets.token_hex(4)}"
-                            )
-                            try:
-                                metadata.replace(quarantine)
-                            except OSError:
-                                metadata.unlink(missing_ok=True)
-                        if manager:
-                            await manager.close()
-                            skill_sandbox.cleanup(manager.skill_root)
-                        if not db.clear_runtime(
-                            self.con,
-                            task_id,
-                            generation=generation,
-                            claim_lock=lock,
-                        ):
-                            raise RuntimeError("The Sister claim was revoked while restoring the session.") from error
-                        self._handles.pop(task_id, None)
-                        handle = None
-                        manager = None
-                        resumed = False
-                if not resumed:
-                    manager = _SisterManager(self.session, self.cfg, prepared, workspace)
-                    manager._semaphore = self._sister_semaphore  # one cap across all named Sisters
-                    manager.beast = bool(prepared.get("beast"))
-                    definition = manager.resolve_definition(manager.agent_type, workspace)
-                    agent = await manager.create_task(
-                        definition=definition,
-                        description=f"{row['assignee']} · {row['title']}",
-                        prompt=prompt,
-                        model=manager.model,
-                        background=True,
-                        name=task_id,
-                        isolation=None,
-                        cwd=workspace,
-                        tool_call_id=tool_call_id,
-                        context=context,
-                        on_update=on_update,
-                    )
-                    orphan = await asyncio.to_thread(_adoptable_transcript, row)
-                    if orphan:
-                        await asyncio.to_thread(
-                            os.replace, orphan, str(agent.transcript))
-                        agent.initial_prompt_sent = True
-                        await agent.persist()
-                if not db.set_runtime(
-                    self.con,
-                    task_id,
-                    agent.id,
-                    str(agent.transcript),
-                    generation=generation,
-                    claim_lock=lock,
-                ):
-                    raise RuntimeError("The Sister claim was revoked while saving the session.")
-                if handle is None:
-                    handle = SisterHandle(
-                        board_id=task_id,
-                        sister=str(row["assignee"]),
-                        manager=manager,
-                        agent=agent,
-                        context=context,
-                        generation=generation,
-                    )
-                handle.context = context
-                token, done_event = self._begin_run(handle, generation, lock)
-                self._handles[task_id] = handle
-                if resumed:
-                    db.add_event(
-                        self.con,
-                        task_id,
-                        "resumed",
-                        {"agent_id": agent.id},
-                        generation=generation,
-                    )
-                else:
-                    manager.run_background(agent, prompt, notify=False)
-                supervisor = asyncio.create_task(
-                    self._supervise(handle, token, done_event)
-                )
-                handle.supervisor = supervisor
-                return self.snapshot(task_id, launched=True)
-            except BaseException:
-                db.back_to_ready(
-                    self.con,
-                    task_id,
-                    generation=generation,
-                    claim_lock=lock,
-                )
-                if manager:
-                    try:
-                        await asyncio.shield(manager.close())
-                    except BaseException:  # noqa: BLE001, S110 - closing during teardown must not mask the board transition
-                        pass
-                    skill_sandbox.cleanup(manager.skill_root)
-                self._handles.pop(task_id, None)
-                raise
-
-    async def launch_ready(
-        self,
-        *,
-        context: Any,
-        tool_call_id: str,
-        on_update: Any = None,
-        task_ids: list[str] | None = None,
-        workspace: str | None = None,
-        validate_tasks: Callable[[list[str]], None] | None = None,
-    ) -> list[dict[str, Any]]:
-        if task_ids == []:
-            return []
-        if self._closing:
-            raise RuntimeError("Sister runtime is closing")
+    async def launch_ready(self, *, context, tool_call_id, on_update=None, task_ids=None,
+                           workspace=None, validate_tasks=None):
         await asyncio.to_thread(self._reconcile, task_ids, workspace)
-        free = self._sister_semaphore.available
-        default_ready = None
-        if task_ids is None:
-            # fair_ready reconciles every card in the project against its file before it picks;
-            # that is filesystem work, so it goes off the loop the way _reconcile above
-            # does. Blocking here freezes every other Last Order turn for the whole pass.
-            rows = await asyncio.to_thread(
-                db.fair_ready, self.con, limit=free, lane="workers", workspace=workspace
-            )
-            default_ready = [row["id"] for row in rows]
-        wanted = list(dict.fromkeys(task_ids if task_ids is not None else default_ready))
-        if not wanted:
-            return []
-        # Check the scheduler's actual selection before any claim/model work. The
-        # Research driver and ordinary Board callers retain their own contracts.
-        if validate_tasks is not None:
+        host_cap, _ = admission.limits()
+        free = max(0, host_cap - len(db.by_status(self.con, "running"))) if host_cap else 100
+        rows = await asyncio.to_thread(db.fair_ready, self.con, limit=free,
+                                       lane="workers", workspace=workspace) if task_ids is None else []
+        wanted = list(dict.fromkeys(task_ids if task_ids is not None else [r["id"] for r in rows]))
+        if validate_tasks:
             validate_tasks(wanted)
-
-        # Take a slot before taking a lease: cards that do not fit stay ready for
-        # the next round instead of holding a lease they cannot run under.
-        if task_ids is None:
-            selected = set(wanted)
-            deferred = [
-                row["id"] for row in db.by_status(self.con, "ready", workspace=workspace)
-                if row["id"] not in selected
-            ]
-            starting = wanted
-        else:
-            deferred = wanted[free:]
-            starting = wanted[:free]
-
-        async def start(task_id: str) -> dict[str, Any]:
-            return await self.launch(
-                task_id,
-                context=context,
-                tool_call_id=tool_call_id,
-                on_update=on_update,
-            )
-
-        results = await asyncio.gather(
-            *(start(task_id) for task_id in starting),
-            return_exceptions=True,
-        )
-        out: list[dict[str, Any]] = []
-        for task_id, result in zip(starting, results):
-            if isinstance(result, Exception):
-                out.append({"task_id": task_id, "status": "error", "error": str(result)})
-            else:
-                out.append(result)
-        out += [
-            {"task_id": task_id, "status": "queued",
-             "note": "Execution capacity is full; the card remains ready for the next dispatch."}
-            for task_id in deferred
-        ]
+        out = []
+        for task_id in wanted:
+            try:
+                out.append(await self.launch(task_id, context=context, tool_call_id=tool_call_id,
+                                              on_update=on_update))
+            except Exception as error:  # noqa: BLE001 - report per-card failures without losing other launch receipts
+                out.append({"task_id": task_id, "status": "error", "error": str(error)})
         return out
 
-
-    def _idle_seconds(self, handle: SisterHandle) -> int | None:
-        """How long the Sister has shown no progress, once past the wedge threshold."""
-        row = db.get(self.con, handle.board_id)
-        last = row["heartbeat_at"] if row is not None else None
-        if last is None:
-            return None
-        idle = int(time.time()) - int(last)
-        return idle if idle >= db.HEARTBEAT_STALE_SECONDS else None
-
-    async def _await_turn(
-        self, handle: SisterHandle, runner: asyncio.Task[None]
-    ) -> bool:
-        """Wait without a wall-clock limit, renewing the card lease while it runs.
-
-        The renewal proves this runtime is alive; progress is what the Sister's own session
-        stamps. A turn that shows none for ``HEARTBEAT_STALE_SECONDS`` is wedged: it is
-        stopped like a lost claim, with the reason left on the handle for the supervisor.
-        """
-        while True:
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(runner), timeout=_HEARTBEAT_SECONDS
-                )
-                return True
-            except TimeoutError:
-                if handle.claim_lock and db.heartbeat(
-                    self.con,
-                    handle.board_id,
-                    handle.claim_lock,
-                    generation=handle.generation,
-                    progress=False,
-                ):
-                    idle = self._idle_seconds(handle)
-                    if idle is None:
-                        continue
-                    handle.stalled = f"the Sister showed no progress for {idle} s and was stopped"
-                    break
-                row = db.get(self.con, handle.board_id)
-                if (
-                    row is not None
-                    and int(row["generation"]) == handle.generation
-                    and row["status"] != "running"
-                ):
-                    await asyncio.shield(runner)
-                    return True
-                break  # ownership changed: stop the child; later writes are CAS-fenced
-        if (
-            handle.manager
-            and handle.agent
-            and handle.agent.status in {"running", "pending"}
-        ):
-            await handle.manager.stop_task(handle.agent.id, context=handle.context)
-        await asyncio.gather(runner, return_exceptions=True)
-        return False
-
-    def _record_result(self, handle: SisterHandle, claim_lock: str) -> None:
-        if not handle.agent:
-            return
-        current_output = getattr(handle.agent, "current_output", None)
-        text = current_output().strip() if callable(current_output) else ""
-        if text:
-            self._owned_event(
-                handle, claim_lock, "sister_result", {"text": text[-12_000:]}
-            )
-
-    async def _finish_stop(self, handle: SisterHandle, token: object) -> None:
-        row = self._row_for_run(handle, token)
-        if row is None:
-            return
-        claim_lock = handle.claim_lock if row["status"] == "running" else None
-        if db.mark_stopped(self.con, handle.board_id, generation=handle.generation,
-                           claim_lock=claim_lock):
-            self._event(handle, "stopped", {"by": "Last Order"})
-        row = self._row_for_run(handle, token)
-        if row is not None and row["status"] in TERMINAL_BOARD_STATUSES:
-            await self._notify(handle, token)
-
-    async def _fail_stalled(self, handle: SisterHandle, token: object) -> None:
-        """A wedged Sister was stopped: the attempt fails like any other, under its own fence."""
-        reason, handle.stalled = handle.stalled, None
-        async with handle.state_lock:
-            row = self._row_for_run(handle, token)
-            if row is None or not self._owns_running(handle, row):
-                return
-            if self._owned_event(
-                handle, str(handle.claim_lock), "failed", {"reason": reason}
-            ) and db.mark_failed(
-                self.con,
-                handle.board_id,
-                generation=handle.generation,
-                claim_lock=handle.claim_lock,
-                failure_kind="timeout",
-                reason=reason,
-            ):
-                await self._notify(handle, token)
-
-    async def _finish_if_settled(
-        self, handle: SisterHandle, token: object, row: Mapping[str, Any]
-    ) -> bool:
-        """Observe a lifecycle-hook transition without trying to settle it again."""
+    async def message(self, task_id, message, *, summary, confirmed, expected_generation, context):
+        from misaka.core.network import messages
+        row = db.get(self.con, task_id)
+        if row is None or int(row["generation"]) != expected_generation:
+            raise ValueError("Card generation changed; read its current state first")
         if row["status"] == "running":
-            return False
-        if row["status"] == "review":
-            self._event(
-                handle, "review_requested", {"reviewer": row["reviewer"]}
-            )
-        elif row["status"] in TERMINAL_BOARD_STATUSES:
-            await self._notify(handle, token)
-        return True
+            with closing(messages.connect()) as con:
+                messages.send(con, row["instance_id"], message, summary=summary,
+                              sender=os.environ.get("MISAKA_WHO") or "last-order", to_task=task_id, generation=expected_generation,
+                              sender_session=getattr(getattr(context, "sessionManager", None), "sessionId", None))
+            return {"success": True, "mode": "steer", **self.snapshot(task_id)}
+        if not confirmed:
+            raise ValueError("User confirmation is required to start a new model turn")
+        params = {"task_id": task_id, "say": message, "expected_generation": expected_generation}
+        if pane := os.environ.get("MISAKA_NET_PANE"):
+            params["place"] = {"grid": pane}
+        await self._request("pane.continue_card", params)
+        return {"success": True, "mode": "resume" if row["session_file"] else "first-attempt", **self.snapshot(task_id)}
 
-    async def _supervise(
-        self, handle: SisterHandle, token: object, done_event: asyncio.Event
-    ) -> None:
-        try:
-            while handle.agent and handle.manager:
-                async with handle.state_lock:
-                    row = self._row_for_run(handle, token)
-                    if row is None:
-                        return
-                    if handle.stop_requested and row["status"] != "running":
-                        await self._finish_stop(handle, token)
-                        return
-                    if await self._finish_if_settled(handle, token, row):
-                        return
-                    if not self._owns_running(handle, row):
-                        if handle.stop_requested:
-                            self._event(handle, "stop_after_ownership_loss", {})
-                        return
-                    runner = handle.agent.runner
-                    if runner is None:
-                        raise RuntimeError("Sister runner was not created")
-                completed = await self._await_turn(handle, runner)
-                if not completed:
-                    if handle.stalled:
-                        await self._fail_stalled(handle, token)
-                    return
-                async with handle.state_lock:
-                    row = self._row_for_run(handle, token)
-                    if row is None:
-                        return
-                    # SendMessage and this commit section share state_lock, so a
-                    # completed old turn can never submit/fail a replacement.
-                    if handle.agent.runner is not runner:
-                        continue
-                    if handle.stop_requested and row["status"] != "running":
-                        await self._finish_stop(handle, token)
-                        return
-                    if await self._finish_if_settled(handle, token, row):
-                        return
-                    if not self._owns_running(handle, row):
-                        if handle.stop_requested:
-                            self._event(handle, "stop_after_ownership_loss", {})
-                        return
-                    owner_lock = str(handle.claim_lock)
-                    self._record_result(handle, owner_lock)
-                    if self._closing:
-                        db.back_to_ready(
-                            self.con,
-                            handle.board_id,
-                            generation=handle.generation,
-                            claim_lock=handle.claim_lock,
-                        )
-                        return
-                    if handle.stop_requested:
-                        await self._finish_stop(handle, token)
-                        return
-                    if handle.agent.status != "completed":
-                        reason = handle.agent.error or "Sister runtime failed"
-                        if worker.stopped_at_cap(reason):
-                            if db.back_to_ready(
-                                self.con,
-                                handle.board_id,
-                                generation=handle.generation,
-                                claim_lock=handle.claim_lock,
-                            ):
-                                self._event(
-                                    handle,
-                                    "budget_stop",
-                                    budget.status(self.con, self.cfg.get("token_cap"), task_id=handle.board_id),
-                                )
-                            return
-                        changed = self._owned_event(
-                            handle, owner_lock, "failed", {"reason": reason}
-                        ) and db.mark_failed(
-                            self.con,
-                            handle.board_id,
-                            generation=handle.generation,
-                            claim_lock=handle.claim_lock,
-                        )
-                        if changed:
-                            await self._notify(handle, token)
-                        return
-                    if db.mark_unsettled(
-                        self.con,
-                        handle.board_id,
-                        generation=handle.generation,
-                        claim_lock=handle.claim_lock,
-                    ):
-                        # Delivers only once the card is out of attempts; a retry is silent.
-                        await self._notify(handle, token)
-                        return
-                    row = self._row_for_run(handle, token)
-                    if row is not None:
-                        await self._finish_if_settled(handle, token, row)
-                    return
-        except asyncio.CancelledError:
-            async with handle.state_lock:
-                row = self._row_for_run(handle, token)
-                if row is not None and handle.stop_requested:
-                    await self._finish_stop(handle, token)
-                elif row is not None and row["status"] == "running":
-                    db.back_to_ready(
-                        self.con,
-                        handle.board_id,
-                        generation=handle.generation,
-                        claim_lock=handle.claim_lock,
-                    )
-            raise
-        except Exception as error:  # noqa: BLE001 - infrastructure errors are explicit board failures
-            row = self._row_for_run(handle, token)
-            if row is not None and row["status"] == "running" and handle.claim_lock:
-                reason = f"supervisor: {error}"
-                if self._owned_event(
-                    handle, str(handle.claim_lock), "failed", {"reason": reason}
-                ) and db.mark_failed(
-                    self.con,
-                    handle.board_id,
-                    generation=handle.generation,
-                    claim_lock=handle.claim_lock,
-                    failure_kind="crash",
-                ) and not self._closing:
-                    await self._notify(handle, token)
-        finally:
-            if self._is_current(handle, token) and handle.manager:
-                skill_sandbox.cleanup(handle.manager.skill_root)
-                row = db.get(self.con, handle.board_id)
-                if row is not None and row["status"] in TERMINAL_BOARD_STATUSES:
-                    # Release resources and drop the handle; a later restore rebuilds
-                    # it from the durable row and transcript.
-                    try:
-                        await asyncio.shield(handle.manager.close())
-                    except BaseException:  # noqa: BLE001, S110 - closing during teardown must not mask the board transition
-                        pass
-                    self._handles.pop(handle.board_id, None)
-                    self._owned_claims.discard(handle.claim_lock)
-            done_event.set()
+    async def stop(self, task_id, *, confirmed, context):
+        if not confirmed:
+            raise ValueError("Explicit user confirmation is required before stopping a Sister")
+        row = db.get(self.con, task_id)
+        if row is None or row["status"] not in ACTIVE_BOARD_STATUSES | {"blocked", "triage"}:
+            raise ValueError(f"Card {task_id} is not active")
+        result = await self._request("card.stop", {"task_id": task_id,
+                                                  "expected_generation": row["generation"],
+                                                  "expected_claim_lock": row["claim_lock"]})
+        return {"success": result.get("stopped", False), **self.snapshot(task_id)}
 
-
-    async def _notify(self, handle: SisterHandle, token: object) -> None:
-        if not self._is_current(handle, token) or self._closing:
-            return
-        row = self._row_for_run(handle, token)
-        if row is None or row["status"] not in TERMINAL_BOARD_STATUSES:
-            return
-        try:
-            self.deliver_pending(row["workspace"])
-        except Exception as error:  # noqa: BLE001 - delivery failed: release the claim so another session (or the next attempt) can redeliver
-            try:
-                db.add_event(
-                    self.con,
-                    handle.board_id,
-                    "notification_error",
-                    {"error": f"{type(error).__name__}: {error}"[:500]},
-                    generation=handle.generation,
-                )
-            except Exception:  # noqa: BLE001, S110 - recording the delivery error is itself best-effort
-                pass
+    async def close(self):
+        # This object owns no writer, process, claim or background execution.
+        return
 
     def notify_row(self, task_id: str, *, delivery, generation=None, status=None, row=None) -> bool:
         """Schedule a leased notification; only the transcript receipt may ACK it."""
@@ -1323,7 +413,7 @@ class SisterRuntime:
         data = {
             "task_id": task_id,
             "trust": "untrusted-data",
-            "sister": row["assignee"],
+            "sister": row["instance_id"],
             "status": STATUS_MAP.get(row["status"], row["status"]),
             "boardStatus": row["status"],
             "summary": submission.get("summary") or (row["block_reason"] if blocked else None)
@@ -1369,8 +459,6 @@ class SisterRuntime:
         if row is None:
             return None, f"Card not found: {task_id}"
         session_file = row["session_file"]
-        if not (session_file and os.path.isfile(session_file)):
-            session_file = find_most_recent_session(session_roots.card_session_dir(row))
         if not session_file:
             return None, f"Card {task_id} has no session yet."
         text = transcript_tail(session_file, limit)
@@ -1401,16 +489,8 @@ class SisterRuntime:
                     remaining = deadline - loop.time()
                     if remaining <= 0:
                         break
-                    handle = self._handles.get(task_id)
-                    local_done = (
-                        asyncio.create_task(handle.done.wait())
-                        if handle and not handle.done.is_set()
-                        else None
-                    )
                     tick = asyncio.create_task(asyncio.sleep(min(_OUTPUT_POLL_SECONDS, remaining)))
                     watchers = {tick}
-                    if local_done:
-                        watchers.add(local_done)
                     if aborted:
                         watchers.add(aborted)
                     done, pending = await asyncio.wait(
@@ -1434,266 +514,3 @@ class SisterRuntime:
         retrieval = "success" if terminal else "timeout" if block else "not_ready"
         data = self._snapshot_row(row)
         return {"retrieval_status": retrieval, "task": data}
-
-    @staticmethod
-    def _mail_card(row, text, summary):
-        """A note for one attempt at a card, from its Last Order, read by the card's inbox."""
-        from misaka.core.network import messages
-        con = messages.connect()
-        try:
-            messages.send(con, row["assignee"], text, summary=summary, sender="last-order",
-                          to_task=row["id"], generation=int(row["generation"]))
-        finally:
-            con.close()
-
-    async def _restore(self, task_id: str, context: Any) -> SisterHandle:
-        row = db.get(self.con, task_id)
-        if row is None:
-            raise ValueError(f"Card not found: {task_id}")
-        current = self._handles.get(task_id)
-        if current and current.generation == int(row["generation"]):
-            return current
-        if not row["agent_id"] or not row["workspace"]:
-            raise ValueError(f"Card {task_id} has no resumable Sister session.")
-        prepared = dict(row)
-        prepared.update(worker.card_extras(
-            self.con, row, self.cfg, include_materials=False))
-        manager = _SisterManager(self.session, self.cfg, prepared, row["workspace"])
-        manager._semaphore = self._sister_semaphore
-        manager._session_dir(context)
-        agent = await manager._find_task_async(row["agent_id"], context)
-        if agent is None:
-            raise ValueError(f"Card {task_id} has no Sister session log.")
-        if row["session_file"] and agent.transcript.resolve() != Path(row["session_file"]).resolve():
-            raise ValueError(f"Card {task_id} session path does not match the board record.")
-        handle = SisterHandle(
-            board_id=task_id,
-            sister=row["assignee"],
-            manager=manager,
-            agent=agent,
-            context=context,
-            generation=int(row["generation"]),
-            claim_lock=(
-                row["claim_lock"] if row["claim_lock"] in self._owned_claims else None
-            ),
-        )
-        handle.done.set()
-        self._handles[task_id] = handle
-        return handle
-
-    async def message(
-        self,
-        task_id: str,
-        message: str,
-        *,
-        summary: str,
-        confirmed: bool,
-        expected_generation: int,
-        context: Any,
-    ) -> dict[str, Any]:
-        # Hold the global lock only while resolving the handle; wait under the card lock.
-        async with self._lock:
-            if self._closing:
-                raise RuntimeError("Sister runtime is closing")
-            observed = db.get(self.con, task_id)
-            if observed is None:
-                raise ValueError(f"Card not found: {task_id}")
-            if int(observed["generation"]) != expected_generation:
-                raise RuntimeError("The Sister session changed; try again.")
-            if (
-                observed["status"] == "running"
-                and observed["claim_lock"] not in self._owned_claims
-            ):
-                raise ValueError("This card belongs to another Last Order session; send the message from its owning session.")
-            never_ran = (observed["status"] in TERMINAL_BOARD_STATUSES
-                         and not observed["agent_id"] and not observed["session_file"])
-            if never_ran:
-                # Stopped before its first turn (2026-09-18, B16): there is nothing to resume,
-                # so this is the card's first attempt, from its contract, with the note mailed
-                # to that attempt's inbox for its first tool boundary (B8's card address).
-                if not confirmed:
-                    raise ValueError("User confirmation is required to start a Sister card with a new model turn.")
-                if not db.reopen_task(self.con, task_id, expected_generation=expected_generation):
-                    raise RuntimeError("The Sister session changed; try again.")
-                started = await self.launch(task_id, context=context, tool_call_id="message")
-                row = db.get(self.con, task_id)
-                await asyncio.to_thread(self._mail_card, row, message, summary)
-                handle = self._handles.get(task_id)
-                if handle is not None:
-                    self._event(handle, "message", {"summary": summary, "mode": "first-attempt"})
-                return {"success": True, "mode": "first-attempt", **started}
-            handle = await self._restore(task_id, context)
-        if not handle.manager or not handle.agent:
-            raise ValueError(f"Card {task_id} has no resumable Sister session.")
-        async with handle.state_lock:
-            row = db.get(self.con, task_id)
-            if (
-                row is None
-                or int(row["generation"]) != expected_generation
-                or int(row["generation"]) != handle.generation
-            ):
-                raise RuntimeError("The Sister session changed; try again.")
-            if row["status"] == "review":
-                raise ValueError("The Sister submitted this card and its review is in progress; wait until the review finishes.")
-            if row["status"] == "running":
-                if not handle.claim_lock or handle.claim_lock != row["claim_lock"]:
-                    raise ValueError("This card belongs to another Last Order session; send the message from its owning session.")
-                was_live = handle.agent.status in {"running", "pending"}
-                try:
-                    await handle.manager.send_message(
-                        handle.agent.id, message, context=context, notify=False
-                    )
-                except BaseException:
-                    if not was_live:
-                        db.back_to_ready(
-                            self.con,
-                            task_id,
-                            generation=handle.generation,
-                            claim_lock=handle.claim_lock,
-                        )
-                    raise
-                mode = "steer" if was_live else "resume"
-                if not was_live and (
-                    handle.supervisor is None or handle.supervisor.done()
-                ):
-                    token, done_event = self._begin_run(
-                        handle, handle.generation, handle.claim_lock
-                    )
-                    handle.supervisor = asyncio.create_task(
-                        self._supervise(handle, token, done_event)
-                    )
-                self._event(handle, "message", {"summary": summary, "mode": mode})
-                return {"success": True, "mode": mode, **self.snapshot(task_id)}
-            if row["status"] not in TERMINAL_BOARD_STATUSES:
-                raise ValueError(f"Card {task_id} is {row['status']}; its session cannot be continued yet.")
-            if not confirmed:
-                raise ValueError("User confirmation is required to continue a completed Sister session with a new model turn.")
-            reading = budget.status(self.con, self.cfg.get("token_cap"), task_id=task_id)
-            if reading["mode"] == "stop":
-                raise RuntimeError("The token budget limit has been reached; no new turn was started.")
-
-            lock = f"lo-resume:{os.getpid()}:{secrets.token_hex(4)}"
-            if not db.claim_resume(
-                self.con,
-                task_id,
-                lock,
-                os.getpid(),
-                worker_identity=self._owner_identity,
-                expected_generation=expected_generation,
-                **_admission_limits(),
-            ):
-                raise RuntimeError("The card could not be claimed atomically; another session may have resumed it.")
-            self._owned_claims.add(lock)
-            resumed = db.get(self.con, task_id)
-            generation = int(resumed["generation"])
-            token, done_event = self._begin_run(handle, generation, lock)
-            handle.context = context
-            handle.manager.beast = reading["mode"] == "beast"
-            try:
-                await handle.manager.send_message(
-                    handle.agent.id, message, context=context, notify=False
-                )
-            except BaseException:
-                db.back_to_ready(
-                    self.con,
-                    task_id,
-                    generation=generation,
-                    claim_lock=lock,
-                )
-                try:
-                    await asyncio.shield(handle.manager.close())
-                except BaseException:  # noqa: BLE001, S110 - closing during teardown must not mask the board transition
-                    pass
-                done_event.set()
-                self._handles.pop(task_id, None)
-                self._owned_claims.discard(lock)
-                raise
-            self._event(handle, "message", {"summary": summary, "mode": "resume"})
-            handle.supervisor = asyncio.create_task(
-                self._supervise(handle, token, done_event)
-            )
-            return {"success": True, "mode": "resume", **self.snapshot(task_id)}
-
-    async def stop(self, task_id: str, *, confirmed: bool, context: Any) -> dict[str, Any]:
-        if not confirmed:
-            raise ValueError("Explicit user confirmation is required before stopping a Sister.")
-        async with self._lock:
-            if self._closing:
-                raise RuntimeError("Sister runtime is closing")
-            row = db.get(self.con, task_id)
-            if row is None or row["status"] not in ACTIVE_BOARD_STATUSES:
-                status = row["status"] if row is not None else "missing"
-                raise ValueError(f"Card {task_id} is not running (current status: {status}).")
-            if row["status"] == "running" and row["claim_lock"] not in self._owned_claims:
-                raise ValueError("This card belongs to another Last Order session; stop it from its owning session.")
-            handle = await self._restore(task_id, context)
-            async with handle.state_lock:
-                row = db.get(self.con, task_id)
-                if row is None or int(row["generation"]) != handle.generation:
-                    raise RuntimeError("The Sister session changed; try again.")
-                if row["status"] == "running" and (
-                    not handle.claim_lock or handle.claim_lock != row["claim_lock"]
-                ):
-                    raise ValueError("This card belongs to another Last Order session; stop it from its owning session.")
-                token = handle.run_token
-                done_event = handle.done
-                handle.stop_requested = True
-                if (
-                    handle.agent
-                    and handle.manager
-                    and handle.agent.status in {"running", "pending"}
-                ):
-                    await handle.manager.stop_task(handle.agent.id, context=context)
-            # A supervisor that has already returned cannot make the transition for us. That is
-            # the ordinary shape of a card in review: _supervise runs accept -> review_requested
-            # and returns, but its finally only drops the handle on a TERMINAL status, and
-            # review is not one -- so the handle survives with a finished supervisor and an
-            # already-set done event. Waiting on it returned instantly with the card still in
-            # review, and stop() answered "temporarily owned by another transition; retry
-            # shortly" to every retry, forever. Finished is the same as absent here.
-            if handle.supervisor and not handle.supervisor.done():
-                wait_done = True
-            else:
-                await self._finish_stop(handle, token)
-                done_event.set()
-                wait_done = False
-        if wait_done:
-            # Wait outside the global lock so other cards can continue.
-            await done_event.wait()
-        final = db.get(self.con, task_id)
-        if final is not None and final["status"] in ACTIVE_BOARD_STATUSES:
-            return {"success": False,
-                    "note": "Stop was requested, but the card is temporarily owned by another transition; retry shortly.",
-                    **self.snapshot(task_id)}
-        return {"success": True, **self.snapshot(task_id)}
-
-    async def close(self) -> None:
-        async with self._lock:
-            self._closing = True
-            active = [
-                handle for handle in self._handles.values() if not handle.done.is_set()
-            ]
-        # Settle each Sister/descendant turn while its running claim is still
-        # valid so the usage sink can append the final agent_end.  Cancelling
-        # supervisors first would clear the claim in their CancelledError path
-        # and silently discard the entire closing turn's token usage.
-        await asyncio.gather(
-            *(handle.manager.close() for handle in active if handle.manager),
-            return_exceptions=True,
-        )
-        for handle in active:
-            if handle.supervisor and not handle.supervisor.done():
-                handle.supervisor.cancel()
-        await asyncio.gather(
-            *(handle.supervisor for handle in active if handle.supervisor),
-            return_exceptions=True,
-        )
-
-
-__all__ = [
-    "ACTIVE_BOARD_STATUSES",
-    "STATUS_MAP",
-    "TERMINAL_BOARD_STATUSES",
-    "SisterRuntime",
-    "transcript_tail",
-]

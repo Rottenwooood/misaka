@@ -6,8 +6,8 @@ from misaka.core.moments import CoreCommand
 
 
 def _roster():
-    from misaka.config import sisters
-    return ["last-order"] + sorted(sisters())
+    from misaka.core.platform.instances import inventory
+    return [item["id"] for item in inventory()]
 
 
 def _current():
@@ -45,8 +45,7 @@ def _sister_command():
             from misaka.ui.panel import client as net
             argv = [sys.executable, "-m", "misaka", "chat"]
             title = "Last Order" if name == "last-order" else name
-            if name != "last-order":
-                argv += ["--as", name]
+            argv += ["--instance", name]
             out = net.request("pane.create",
                               {"argv": argv, "cwd": os.getcwd(), "title": title,
                                "place": {"grid": os.environ["MISAKA_NET_PANE"]}})   # a pane beside her Last Order (grid)
@@ -64,8 +63,7 @@ def _sister_command():
                 return
 
         argv = [sys.executable, "-m", "misaka", "chat"]
-        if name != "last-order":
-            argv += ["--as", name]
+        argv += ["--instance", name]
         ctx.ui.notify(f"Switching to {name}…", "info")
         os.execv(sys.executable, argv)
 

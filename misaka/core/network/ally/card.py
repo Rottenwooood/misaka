@@ -212,7 +212,7 @@ class Attempt:
 
         # The card's transcript goes on in the same file, whichever ACP session writes it.
         session_dir = session_roots.card_session_dir(self.task)
-        previous = worker.continue_flags(self.task.get("session_file"), session_dir)
+        previous = worker.continue_flags(self.task.get("session_file"))
         manager = (SessionManager.open(previous[1]) if previous
                    else SessionManager.create(self.workspace, session_dir))
         self.transcript = Transcript(manager, self.name)
@@ -263,7 +263,8 @@ class Attempt:
         from misaka.core.wiring import SessionSpec
 
         spec = SessionSpec(profile_dir="", role=self.name, workspace=self.workspace, kind="card",
-                           sender=self.name, receive_messages=True, task_id=self.task_id)
+                           sender=self.task["instance_id"], receive_messages=True, task_id=self.task_id,
+                           instance_id=self.task["instance_id"])
         catalog = session_catalog.part(spec)
         catalog.steer = False               # mail waits for the turn to end; SendMessage says so
         self.parts = [catalog, *filter(None, [panel.part(spec)])]
@@ -296,7 +297,7 @@ class Attempt:
         """This card's queued mail, taken for the next turn, rendered; None when there is none."""
         if self.mail is None:
             self.mail = messages.connect()
-        rows = messages.pending(self.mail, self.name, session_id=self.transcript.session_id, task_id=self.task_id)
+        rows = messages.pending(self.mail, self.task["instance_id"], session_id=self.transcript.session_id, task_id=self.task_id)
         deliverable, discard = messages.delivery_plan(rows, self.db_path, task_generation=self.generation)
         token = messages.new_lease_token()
         won = messages.claim(self.mail, list(deliverable | discard), token=token)
@@ -485,7 +486,9 @@ async def run_attempt(task, generation, claim_lock, *, db_path, say=None, out=No
             for signum in (signal.SIGTERM, signal.SIGHUP):  # windows-footgun: ok - POSIX branch
                 loop.add_signal_handler(signum, attempt.leave)  # windows-footgun: ok - POSIX branch
         _read_lines(loop, attempt.typed_line)
-    await attempt.run(say)
+    from misaka.core.platform.instances import writing
+    with writing(task["instance_id"]):
+        await attempt.run(say)
 
 
 def _read_lines(loop, deliver):

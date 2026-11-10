@@ -194,8 +194,6 @@ def current_config():
 
 
 def sisters():
-    """Return the registered Sister IDs (subdirectory names under the Sisters' profiles root)."""
-    root = CFG["profiles_root"]
-    if not os.path.isdir(root):
-        return set()
-    return {d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))}
+    """Registered Sister instance identities, independent of template resource paths."""
+    from misaka.core.platform.instances import inventory
+    return {item["id"] for item in inventory("sister")}

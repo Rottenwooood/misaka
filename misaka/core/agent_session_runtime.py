@@ -292,7 +292,13 @@ class AgentSessionRuntime:
         await self.finishSessionReplacement(options.get("withSession") if options else None)
         return {"cancelled": False}
 
+    def _instance_profile(self):
+        from misaka.core.platform.instances import profile_id
+        return profile_id(self.session.settingsManager.getModelProfile())
+
     async def newSession(self, options: dict[str, Any] | None = None) -> dict[str, bool]:
+        if self._instance_profile():
+            options = {k: v for k, v in (options or {}).items() if k not in ("carryOverContext", "parentSession")}
         if not options or not options.get('carryOverContext'):
             return await self._newSession(options)
         # Once DAG ownership moves, cancellation must not leave the old native

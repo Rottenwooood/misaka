@@ -218,7 +218,8 @@ def test_the_board_stores_session_pointers_relative_and_reads_them_back_as_paths
     con = tasks.connect(CFG["db"])
     try:
         card = execution_card(con, "a card", "body", "10032", workspace=str(tmp_path / "project"))
-        session = home.path("sessions") / "cards" / card / "one.jsonl"
+        from misaka.config.sessions import card_session_dir
+        session = Path(card_session_dir(tasks.get(con, card))) / "one.jsonl"
         assert tasks.set_runtime(con, card, "agent-1", str(session))
         row = tasks.get(con, card)
         assert row["session_file"] == str(session) and row["session_dir"] == str(session.parent)
@@ -246,7 +247,7 @@ def test_the_board_stores_session_pointers_relative_and_reads_them_back_as_paths
     monkeypatch.setenv(home.ENV_HOME, str(moved))
     con = tasks.connect(CFG["db"])
     try:
-        assert tasks.get(con, card)["session_file"] == str(home.path("sessions") / "cards" / card / "one.jsonl")
+        assert tasks.get(con, card)["session_file"] == str(home.path("sessions") / "instances" / row["instance_id"] / "one.jsonl")
     finally:
         con.close()
 

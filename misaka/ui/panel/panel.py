@@ -1748,7 +1748,7 @@ def launch():
         sys.exit(
             "\x1b[1mError:\x1b[0m already inside a pane; panels cannot be nested.\n"
             "Chat with Last Order: misaka chat\n"
-            "Chat with a Sister:   misaka chat --as 10032\n"
+            "Chat with a Sister:   misaka chat --instance INSTANCE\n"
             "Force it anyway:      MISAKA_ALLOW_NESTED=1 misaka"
         )
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -2185,11 +2185,8 @@ def launch():
             return
         folder, path = row["cwd"], row["path"]
         role, kind = row["role"], row["session_kind"]
-        is_fork = bool(session_meta(path).get("parent")) if path else False
         # Only ordinary interactive conversations are resumed as a new interactive runtime.
         # DM/node/child/card sessions belong to their own lifecycle, even when idle.
-        from misaka.config import sisters
-        resumed = kind == "foreground" and row["state"] == "saved" and (role == "last-order" or role in sisters())
         # A session opens only in the space it belongs to (the daemon reopens a remembered one).
         # One that belongs to none is adopted by the active space -- a tab there -- except a fresh
         # (non-fork) Last Order, a workspace root, which takes a space of its own. A reopened
@@ -2197,20 +2194,14 @@ def launch():
         current = active_space()
         if row.get("space"):
             place = {"space": row["space"], "name": row["label"]}
-        elif (resumed and role == "last-order" and not is_fork) or current is None:
+        elif current is None:
             place = {"space": True, "name": row["label"]}
         elif current["tabs"]:
             place = {"tab": hui.pane_ids(current["tabs"][0])[0]}
         else:
             place = {"space": current["id"], "name": row["label"]}
-        if resumed:
-            argv = [sys.executable, "-m", "misaka", "chat"]
-            if role != "last-order":
-                argv += ["--as", role]
-            argv += ["--session", path]
-        else:
-            argv = [sys.executable, "-m", "misaka", "chat", "--attach" if row.get("control") else "--read-only",
-                    "--session" if path else "--catalog", path or row["catalog_file"]]
+        argv = [sys.executable, "-m", "misaka", "chat", "--attach" if row.get("control") else "--read-only",
+                "--session" if path else "--catalog", path or row["catalog_file"]]
         pane_id = new_pane(argv, row["label"], place=place, cwd=folder)
         if kind == "foreground" and role == "last-order":
             auto_names[pane_id] = path
@@ -2288,7 +2279,7 @@ def launch():
         name = menu["items"][index]
         close_menu()
         if name != "no sisters":   # A Sister joins the focused pane's tab as a grid pane.
-            new_pane([sys.executable, "-m", "misaka", "chat", "--as", name], name, place={"grid": focused})
+            new_pane([sys.executable, "-m", "misaka", "chat", "--instance", name], name, place={"grid": focused})
 
     def menu_key(key):
         """herdr modal.rs:147-160 handle_global_menu_key: esc closes, k/up and j/down move, enter picks."""

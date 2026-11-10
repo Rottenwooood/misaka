@@ -9,26 +9,19 @@ import os
 import sys
 from pathlib import Path
 
-from misaka.config import current_config, home, profiles, sessions, sisters
+from misaka.config import home, sessions
 
 
-def assembly(who, cfg=None):
-    """Shared role setup for foreground chat and the DM loop.
+def assembly(who):
+    """Select an actual instance, never a template/profile as an executing identity."""
+    from contextlib import closing
 
-    Returns ``(profile_dir, default_model)``; exits if ``who`` is not a known Sister.
-    Persona text is not resolved here (``config.identity``), and neither are skills:
-    the skills extension discovers them from the session spec."""
-    cfg = cfg or current_config()
-    if who:
-        prof = os.path.join(cfg["profiles_root"], who)
-        if not os.path.isdir(prof):
-            sys.exit(f"Unknown Sister {who!r}. Roster: {', '.join(sorted(sisters()))}")
-        # Her own pin first: one Sister, one model, set from her own session's
-        # /model selector (config.profiles.persist_role_default_model). The
-        # product-wide default is only the fallback for a Sister who has none.
-        return prof, profiles.pinned_model(prof) or cfg["default_model"]
-    prof = os.path.join(cfg["roles_root"], "last_order")
-    return prof, cfg["lo_model"]
+    from misaka.core.platform import instances, tasks, work
+    if who is None:
+        with closing(tasks.connect(str(home.path("db")))) as con:
+            who = work.coordinator(con)["id"]
+    prof = instances.profile(who)
+    return prof
 
 
 def resolve_session(session, who):
@@ -46,9 +39,8 @@ def resolve_session(session, who):
     return resolved.path
 
 
-def launch(who, model=None, cont=False, pick=False, session=None, read_only=False, catalog=None, attach=False, skills=None):
+def launch(who, model=None, cont=False, pick=False, session=None, read_only=False, catalog=None, attach=False, skills=None, prompt=None):
     """Open chat; only the writable form assembles an agent. ``who=None`` means Last Order."""
-    from misaka.core.session_manager import read_session_header
     # `chat` is a full-screen TUI in every form, not just under --pick. Without a terminal the
     # picker died on a bare OSError(EINVAL) from registering stdin with the event loop, while
     # every other form exited 0 having printed nothing at all -- so a piped `misaka chat` looked
@@ -56,15 +48,17 @@ def launch(who, model=None, cont=False, pick=False, session=None, read_only=Fals
     #
     # Naming --session or -c as the way out would be wrong: they are equally interactive, and
     # recommending them is what the earlier --pick-only guard did.
-    if not sys.stdin.isatty():
+    if prompt is None and not sys.stdin.isatty():
         sys.exit("misaka chat needs a terminal; stdin is not a TTY.\n"
                  "For a scripted, non-interactive turn use `misaka dm <who> \"<message>\"`.")
+    if prompt is not None and (read_only or attach or catalog):
+        sys.exit("--prompt requires a writable instance session")
     if read_only or attach:
         access = "--attach" if attach else "--read-only"
         if not (session or catalog) or (session and catalog):
             sys.exit(f"chat {access} needs exactly one of --session or --catalog.")
         if who is not None or model is not None or cont or pick or skills:
-            sys.exit(f"chat {access} opens the original session; omit --as, --model, --continue and --pick.")
+            sys.exit(f"chat {access} opens the original session; omit --instance, --model, --continue and --pick.")
         # An explicit file needs no engine, roster, auth, session writer or task hooks.
         path = session or catalog
         if session and not ("/" in session or "\\" in session or session.endswith(".jsonl")):
@@ -86,50 +80,29 @@ def launch(who, model=None, cont=False, pick=False, session=None, read_only=Fals
             sys.exit(str(error))
     if catalog:
         sys.exit("--catalog requires --attach or --read-only.")
-    if session:
-        session = resolve_session(session, who)
-        # A resumed conversation goes back to the folder it worked in, whatever folder the
-        # shell or the panel sits in: the bucket, the workspace, the skills, and every tool
-        # follow the session. A folder that is gone is an error, not a silent move.
-        header = read_session_header(session)
-        folder = header.get("cwd")
-        if not folder or not os.path.isdir(folder):
-            sys.exit(f"Cannot resume {session}: its folder {folder or '(unknown)'} no longer exists.")
-        os.chdir(folder)
-    cfg = current_config()
-    prof, _model_default = assembly(who, cfg)
-    # Sessions are bucketed per role and per folder, like pi's per-cwd sessions:
-    # `-c` resumes this role's conversation about *this* project.
-    sess = sessions.chat_dir(who, os.getcwd())
-    if who:
-        title = f"MISAKA · {who}"
-    else:
-        title = "MISAKA · Last Order"
+    if cont or pick:
+        sys.exit("Instances resume their current session automatically; historical sessions open read-only.")
+    prof = assembly(who)
+    from misaka.core.platform import instances
+    iid = instances.profile_id(prof)
+    actor = instances.get(iid)
+    title = f"MISAKA · {actor['label']}"
     from misaka.core.skills.vendor.startup import _normalize_skills
     from misaka.core.wiring import role_session_setup
 
     flags, session_assembly, env = role_session_setup(
-        prof, os.getcwd(), model=model, receive_messages=True,
+        prof, os.getcwd(), model=model, receive_messages=prompt is None,
+        receive_notifications=prompt is None,
         startup_skills=_normalize_skills(skills))
-    flags += ["--session-dir", sess]
     if session:
-        flags += ["--session", session]
-    elif pick:
-        flags.append("-r")
-    elif cont:
-        flags.append("-c")
-
-    if who:
-        from misaka.core.network.roster import describe_line
-        blurb = (describe_line(who, root=cfg["profiles_root"])
-                 or "Ask her to read papers, look things up, or get work done.")
-    tagline = ("Last Order, Misaka Network coordinator, standing by. She asks questions, splits work into cards, and calls Sisters once you approve. /sister shows the roster; /sister 10032 opens a direct chat."
-               if not who else
-               f"Sister {who} online: {blurb} (/sister shows the roster; /sister <id> opens a direct chat)")
+        flags += ["--session", str(Path(session).expanduser().absolute())]
+    if prompt is not None:
+        flags += ["-p", "--", prompt]
+    tagline = f"{actor['label']} · instance {iid} · template {actor['template_id']}@{actor['template_revision']}"
     os.environ.update({
         "MISAKA_APP_TITLE": title, "MISAKA_TAGLINE": tagline,
         **env,
-        "MISAKA_INPUT_HISTORY": str(home.path("input_history") / f"{who or 'last-order'}.json"),
+        "MISAKA_INPUT_HISTORY": str(home.path("input_history") / f"{iid}.json"),
         "MISAKA_CODING_AGENT": "true"})
 
     from misaka.cli.engine import main as engine_main

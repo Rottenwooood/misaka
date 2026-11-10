@@ -1,7 +1,6 @@
 """Real SDK + core/extension prompt folding, without a model turn or live state."""
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import pytest
 
@@ -232,49 +231,6 @@ async def test_role_entry_keeps_shared_base_and_explicit_tool_ceiling(prompt_hom
     assert shared.read_text(encoding="utf-8") == content
 
 
-async def test_durable_sister_real_child_flags_retain_persona_and_current_tool_guidance(prompt_home):
-    from misaka.cli.args import parse_args
-    from misaka.config import identity
-    from misaka.core.network.sister_runtime import _SisterManager
-    from misaka.core.research.planner import RESEARCH_SISTER_DISCIPLINE
-    from misaka.core.subagent.agents import AgentDefinition
-    from misaka.core.subagent.runtime import AgentTask, RoleContext, SubagentManager
-    from misaka.core.tools.office import office_tool_system_prompt_contribution
-
-    role = "sisters/10032"
-    manager = object.__new__(_SisterManager)
-    manager.role_context = RoleContext(role, str(prompt_home / "profiles" / role),
-                                       str(prompt_home / "workspace"), role)
-    manager.research = {"run_id": "fixture-run"}
-    persona = "Saved historical Sister personality; preserve this exact text.\n"
-    definition = AgentDefinition("sister-10032", "Fixture Sister", persona, source="misaka-sister")
-    task = AgentTask(manager=manager, id="fixture-agent", definition=definition, description="Fixture",
-                     prompt="No execution", model_provider="anthropic", model_id="fixture-model",
-                     cwd=manager.role_context.workspace, transcript=prompt_home / "runtime" / "agent.jsonl",
-                     metadata_path=prompt_home / "runtime" / "agent.meta.json", parent_session_id="fixture")
-
-    # Exercise the real atomic prompt-file writer, CLI parser, resource loader and SDK.
-    # No subprocess, persisted card owner, or model session is started.
-    flags = await manager._child_flags(task)
-    parsed = parse_args(flags)
-    assert parsed.systemPrompt is None and parsed.tools is None
-    saved = Path(parsed.appendSystemPrompt[0])
-    assert saved.read_text(encoding="utf-8") == persona == definition.prompt
-    if os.name != "nt":
-        assert saved.stat().st_mode & 0o777 == 0o600
-    async with assembled(prompt_home, role, "card", research=True, prompt_flags=flags) as session:
-        text = await final_prompt(session)
-        assert persona in text
-        assert text.count(identity.COMMON_CHARTER) == text.count(identity.SISTER_ROLE) == 1
-        assert text.count(RESEARCH_SISTER_DISCIPLINE) == 1
-        assert "<tools>" in text and "## Sub-agents" in text
-        assert "office" in session.getActiveToolNames()
-        for guideline in office_tool_system_prompt_contribution["guidelines"]:
-            assert guideline in text
-        assert await final_prompt(session) == text
-
-    generic_flags = await SubagentManager._child_flags(manager, task)
-    assert "--system-prompt" in generic_flags and "--append-system-prompt" not in generic_flags
 
 
 @pytest.mark.parametrize("tools", ["planning", "materials"])

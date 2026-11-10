@@ -92,6 +92,26 @@ def run_coro(coro):
 
 
 async def open_session(flags, cwd, assembly=None):
+    from misaka.core.platform import instances
+    iid = assembly.spec.instance_id if assembly and assembly.spec else None
+    if not iid:
+        return await _open_session(flags, cwd, assembly)
+    writer = None
+    try:
+        writer = instances.Writer(iid).acquire()
+        runtime, session, error = await _open_session(writer.flags(flags), cwd, assembly)
+        if runtime is not None:
+            runtime.instance_writer = writer
+        else:
+            writer.close()
+        return runtime, session, error
+    except BaseException:
+        if writer:
+            writer.close()
+        raise
+
+
+async def _open_session(flags, cwd, assembly=None):
     """Open and bind a headless session; return ``(runtime, session, error)``."""
     from misaka.cli.args import parse_args
     from misaka.cli.engine import create_runtime_factory, resolve_cli_paths
@@ -157,6 +177,10 @@ async def dispose(runtime):
         await asyncio.wait_for(runtime.dispose(), 30)
     except Exception:  # noqa: BLE001, S110 - dispose is best-effort with a hard timeout
         pass
+    finally:
+        if writer := getattr(runtime, "instance_writer", None):
+            runtime.instance_writer = None
+            writer.close()
 
 
 def event_line(ev):
@@ -308,9 +332,12 @@ async def _run_session(flags, prompt, cwd, on_event=None, timeout=600, env=None,
             "error": f"{type(e).__name__}: {e}",
         }
     finally:
+        instance_writer = getattr(runtime, "instance_writer", None)
         try:
             _result, cancelled = await settle(asyncio.create_task(dispose(runtime)))
         finally:
+            if instance_writer:
+                instance_writer.restore_context()
             for k, v in old_env.items():
                 if v is None:
                     os.environ.pop(k, None)

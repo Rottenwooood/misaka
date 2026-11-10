@@ -28,7 +28,7 @@ import sys
 import time
 from contextlib import contextmanager
 
-from misaka.config import CFG, current_config, home
+from misaka.config import CFG, home
 from misaka.utils import file_lock
 
 DM_TITLE = "Bot Chat"   # Hermes BOT_CHAT_TITLE verbatim; the injection gate keys on it.
@@ -95,9 +95,9 @@ def protocol_file():
 
 
 def dm_session_dir(to):
-    from misaka.config import sessions
+    from misaka.core.platform.instances import session_dir
 
-    return sessions.dm_dir(to)
+    return session_dir(to)
 
 
 @contextmanager
@@ -207,10 +207,15 @@ def _deliver_once(to, message=None, sender=None, model=None, timeout=600,
                 chunks.append(text)
             text = "\n\n".join(chunks)
 
-            cfg = current_config()
-            prof, _model_default = chat.assembly(None if to == "last-order" else to, cfg)
-            user_home = os.path.expanduser("~")
-            sess_dir = dm_session_dir(to)
+            prof = chat.assembly(None if to == "last-order" else to)
+            from misaka.core.platform import instances
+            iid = instances.profile_id(prof)
+            actor = instances.get(iid)
+            user_home = os.getcwd()
+            if actor["session_file"]:
+                from misaka.core.session_manager import read_session_header
+                user_home = read_session_header(actor["session_file"])["cwd"]
+            sess_dir = instances.session_dir(iid)
             os.makedirs(sess_dir, exist_ok=True)
             role = profiles.role_of(prof)
             from misaka.config import identity
@@ -243,15 +248,10 @@ def _deliver_once(to, message=None, sender=None, model=None, timeout=600,
                 kind="dm",
                 sender=to,
                 mcp_role=to,
-                receive_messages=True,
+                receive_messages=False, receive_notifications=False, instance_id=iid,
+                startup_skills=tuple(actor["config"].get("skills", [])),
             ))
 
-            # Check for an existing session only after taking the lock.
-            try:
-                if any(n.endswith(".jsonl") for n in os.listdir(sess_dir)):
-                    flags.append("-c")
-            except OSError:
-                pass
             started = int(time.time())
             r = run_coro(run_session(flags, text, user_home, timeout=timeout,
                                      assembly=session_assembly, env=env))

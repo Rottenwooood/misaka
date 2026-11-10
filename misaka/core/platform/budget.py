@@ -296,7 +296,7 @@ def lease_request(con, cap, task_id, generation, need, want, ttl_seconds=LEASE_T
             raise
 
 
-def settle_request(con, lease, task_id, generation, tokens):
+def settle_request(con, lease, task_id, generation, tokens, **facts):
     """Record what one request used and give its lease back, in one transaction. A lease that has
     already expired was charged in full when it did: nothing more is recorded (False)."""
     now = int(time.time())
@@ -307,7 +307,7 @@ def settle_request(con, lease, task_id, generation, tokens):
                 con.commit()
                 return False
             if int(tokens or 0) > 0:
-                _usage_row(con, task_id, generation, tokens, now)
+                _usage_row(con, task_id, generation, tokens, now, **facts)
             con.commit()
             return True
         except BaseException:

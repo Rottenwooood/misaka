@@ -30,7 +30,20 @@ CREATE TABLE IF NOT EXISTS instances (
  label TEXT NOT NULL,
  retired INTEGER NOT NULL DEFAULT 0 CHECK(retired IN (0,1)),
  created_at INTEGER NOT NULL,
+ session_epoch INTEGER NOT NULL DEFAULT 1,
+ session_file TEXT,
+ agent_id TEXT,
+ writer_pid INTEGER,
+ writer_identity TEXT,
+ writer_token TEXT,
  FOREIGN KEY(template_id,template_revision) REFERENCES templates(id,revision)
+);
+CREATE TABLE IF NOT EXISTS instance_session_archive (
+ instance_id TEXT NOT NULL REFERENCES instances(id),
+ epoch INTEGER NOT NULL,
+ session_file TEXT,
+ archived_at INTEGER NOT NULL,
+ PRIMARY KEY(instance_id,epoch)
 );
 CREATE TABLE IF NOT EXISTS work_requests (
  id TEXT PRIMARY KEY,
@@ -60,6 +73,8 @@ def _text(value, field):
 def _json(value):
     if not isinstance(value, dict):
         raise TypeError("Configuration must be an object")
+    from misaka.core.platform.instances import validate_config
+    validate_config(value)
     return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
@@ -76,6 +91,9 @@ def instance(con, instance_id):
         **json.loads(data.pop("config_json")),
         **json.loads(data.pop("overrides_json")),
     }
+    if data["session_file"]:
+        from misaka.config import home
+        data["session_file"] = str(home.from_stored(data["session_file"]))
     return data
 
 
@@ -358,6 +376,13 @@ def apply(con, operations):
                     (iid, tid, revision, overrides, label, now),
                 )
                 results.append(instance(con, iid))
+            elif kind == "instance.new-session":
+                from misaka.core.platform.instances import new_session
+                iid = identifier(op.pop("id", None))
+                epoch = op.pop("expected_epoch", None)
+                if op:
+                    raise ValueError(f"Unknown fields: {sorted(op)}")
+                results.append(new_session(con, iid, epoch))
             elif kind == "request.create":
                 rid = identifier(op.pop("id", None))
                 owner = instance(con, op.pop("owner_id", None))

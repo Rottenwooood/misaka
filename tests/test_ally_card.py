@@ -129,7 +129,7 @@ async def test_a_turn_that_declares_completion_submits_the_card_like_a_sisters(m
     assert roles[0] == "user" and "toolResult" in roles and roles[-1] == "assistant"
     assert _messages(attempt.transcript.path)[-1]["content"][-1]["text"] == "Done."
     record = session_catalog.find_session(attempt.transcript.session_id)
-    assert (record["task_id"], record["inbox"], record["steer"], record["state"]) == (ally.tid, "fake", False, "saved")
+    assert (record["task_id"], record["inbox"], record["steer"], record["state"]) == (ally.tid, row["instance_id"], False, "saved")
 
 
 async def test_a_turn_that_ends_without_the_call_is_told_once_and_the_card_keeps_running(make):
@@ -177,7 +177,7 @@ async def test_mail_waits_for_the_running_turn_and_mail_to_an_idle_ally_starts_o
 
     def mail(text):
         with closing(messages.connect()) as con:
-            messages.send(con, "fake", text, summary="note", sender="last-order", to_task=ally.tid, generation=1)
+            messages.send(con, ally.row["instance_id"], text, summary="note", sender="last-order", to_task=ally.tid, generation=1)
 
     await _until(lambda: ally.prompts())
     mail("First note.")
@@ -326,4 +326,4 @@ async def test_last_order_without_a_panel_hands_an_ally_card_to_the_daemon(make,
     monkeypatch.setattr(client, "request", lambda method, params=None: calls.append((method, params)) or {"pane_id": "p9"})
     result = await SisterRuntime(None, lambda: ally.con, current_config).launch(ally.tid, context=None, tool_call_id="c")
     assert calls == ["ensure", ("pane.run_card", {"task_id": ally.tid})]
-    assert (result["status"], result["pane"]) == ("running", "p9")
+    assert result["launched"] is True and result["pane"] == "p9"

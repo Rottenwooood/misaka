@@ -769,6 +769,7 @@ async def create_session_manager(
     select_session_fn: SelectSessionFn | None = None,
     output_stream: Any | None = None,
     error_stream: Any | None = None,
+    instance_workspace: bool = False,
 ) -> SessionManager:
     out = output_stream or sys.stdout
     err = error_stream or sys.stderr
@@ -806,7 +807,7 @@ async def create_session_manager(
     if parsed.session:
         resolved = await resolve_session_path(parsed.session, cwd, session_dir)
         if resolved.type in {"path", "local"} and resolved.path:
-            return SessionManager.open(resolved.path, session_dir)
+            return SessionManager.open(resolved.path, session_dir, cwd if instance_workspace else None)
         if resolved.type == "global" and resolved.path:
             out.write(_format_colored_message(f"Session found in different project: {resolved.cwd}", _YELLOW) + "\n")
             should_fork = await prompt_confirm_fn("Fork this session into current directory?")
@@ -850,6 +851,19 @@ async def create_session_manager(
 
 
 async def main(args: list[str], options: MainOptions | None = None) -> int:
+    from misaka.core.platform import instances
+    iid = (options or {}).get("instanceId")
+    if not iid:
+        return await _main(args, options)
+    try:
+        with instances.writing(iid) as writer:
+            return await _main(writer.flags(args), options)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+
+async def _main(args: list[str], options: MainOptions | None = None) -> int:
     resetTimings()
     parsed = parse_args(args)
     for diagnostic in parsed.diagnostics:
@@ -912,7 +926,8 @@ async def main(args: list[str], options: MainOptions | None = None) -> int:
         else startup_settings_manager.getSessionDir()
     )
     try:
-        session_manager = await create_session_manager(parsed, cwd, session_dir, startup_settings_manager)
+        session_manager = await create_session_manager(parsed, cwd, session_dir, startup_settings_manager,
+                                                       instance_workspace=bool((options or {}).get("instanceId")))
     except SystemExit as exit_signal:
         code = exit_signal.code
         return finish(int(code) if isinstance(code, int) else 1)

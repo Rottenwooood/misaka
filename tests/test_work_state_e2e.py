@@ -54,7 +54,7 @@ def main(report_path=None):
                     "op": "template.revise",
                     "id": "sister",
                     "expected_revision": 1,
-                    "config": {"model": "model-v2"},
+                    "config": {"model": "test/model-v2"},
                 }
             ]
         )
@@ -70,8 +70,8 @@ def main(report_path=None):
         )
         state = json.loads(s.cli("state", "show").stdout)
         by_id = {i["id"]: i for i in state["instances"]}
-        assert by_id["i-1"]["config"]["model"] == "model-v1"
-        assert by_id["i-new"]["config"]["model"] == "model-v2"
+        assert by_id["i-1"]["config"]["model"] == "test/model-v1"
+        assert by_id["i-new"]["config"]["model"] == "test/model-v2"
         assert by_id["i-1"]["template_revision"] == 1
         check("跨进程重启读取完整状态；模板修订不改变已存在实例的版本和配置")
 
@@ -236,6 +236,19 @@ def main(report_path=None):
                 == 1
             )
         check("两个独立执行认领进程竞争同一实例：最多一张卡进入 running")
+        active = (E, "t_222222")[verdicts.index("True")]
+        queued = "t_222222" if active == E else E
+        for status in ("blocked", "triage", "review"):
+            s.runtime(active, status)  # External worker-state input, preserving started_at.
+            denied = subprocess.run([sys.executable, "-c", script, queued], cwd=s.project,
+                                    env=s.env, capture_output=True, text=True, check=True)
+            assert denied.stdout.strip() == "False", (status, denied.stdout)
+        s.runtime(active, "blocked")
+        resume = "import sys,os; from misaka.core.platform import tasks; from misaka.config import CFG; c=tasks.connect(CFG['db']); assert tasks.claim_resume(c,sys.argv[1],'resume',os.getpid(),expected_generation=1); assert tasks.mark_stopped(c,sys.argv[1],generation=2); assert tasks.claim(c,sys.argv[2],'next',generation=1)"
+        subprocess.run([sys.executable, "-c", resume, active, queued], cwd=s.project,
+                       env=s.env, check=True, capture_output=True, text=True)
+        check("已开工卡片等待输入、分诊或复核时保留实例名额；原卡恢复后明确停止才允许后卡开工")
+
 
         old_generation = next(
             c

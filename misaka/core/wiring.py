@@ -62,6 +62,7 @@ class SessionSpec:
     # notifications to the root's window (B123).
     receive_notifications: bool | None = None
     task_id: str | None = None
+    instance_id: str | None = None
     tool_ceiling: tuple[str, ...] | None = None
     # Where this session's skills come from, as ``(layer, root)`` pairs. None = the role's
     # three layers (project, role, shared); a card passes its read-only sandbox instead.
@@ -111,6 +112,7 @@ class ToolCollector:
 # ``part(spec) -> object | None`` with a ``tools`` list and the moment methods it needs.
 # Their tools take the same ``customTools`` door as ``TOOL_MODULES``. Order is call order.
 PART_MODULES: tuple[str, ...] = (
+    "misaka.core.platform.instance_part",
     "misaka.core.session_catalog",
     "misaka.core.moa",
     "misaka.core.mcp",
@@ -242,6 +244,7 @@ class Assembly:
             "parts": self.parts,
             "modelProfile": self.model_profile,
             "modelDefaultsReadOnly": self.model_defaults_read_only,
+            "instanceId": self.spec.instance_id if self.spec else None,
         }
 
     @property
@@ -268,20 +271,25 @@ def role_session_setup(profile_dir, workspace, *, model=None, receive_messages=F
     mode overlay and per-phase tool scope, never the base capability registry.
     """
     from misaka.config import identity
-
+    from misaka.core.platform import instances
+    iid = instances.profile_id(profile_dir)
+    config = instances.get(iid)["config"] if iid else {}
     role = profiles.role_of(profile_dir)
-    sender = "last-order" if profiles.is_last_order(profile_dir) else role.rsplit("/", 1)[-1]
+    sender = iid or ("last-order" if profiles.is_last_order(profile_dir) else role.rsplit("/", 1)[-1])
     flags = []
     override = profiles.explicit_model_override(profile_dir, model)
     if override:
         flags += ["--model", override]
+    if "thinking" in config:
+        flags += ["--thinking", config["thinking"]]
     for section in identity.base_prompt_sources(profile_dir, role):
         flags += ["--append-system-prompt", section]
     assembly = assemble(SessionSpec(
         profile_dir=profile_dir, role=role, workspace=workspace, kind="foreground",
         sender=sender, mcp_role=sender, receive_messages=receive_messages,
-        receive_notifications=receive_notifications, research_context=research_context, startup_skills=tuple(startup_skills),
-        overrides=spec_overrides(overrides)))
+        receive_notifications=receive_notifications, research_context=research_context, startup_skills=tuple(dict.fromkeys([*config.get("skills", []), *startup_skills])),
+        overrides=spec_overrides(overrides), instance_id=iid,
+        ))
     from misaka.config import env as env_file
 
     # The role's own .env first (its vendor keys, its plugin knobs), then the hand-off names.
@@ -303,10 +311,10 @@ def inline(
 
 
 def delegates(spec: SessionSpec) -> bool:
-    """Sister roots delegate; generic children follow the upstream tool filter."""
+    """Instance Sisters execute; standalone SDK children use the upstream filter."""
     from misaka.core.subagent import disallowed_management_tools
 
-    return not profiles.is_last_order(spec.profile_dir) and "Agent" not in disallowed_management_tools(spec.kind)
+    return not spec.instance_id and not profiles.is_last_order(spec.profile_dir) and "Agent" not in disallowed_management_tools(spec.kind)
 
 
 def sender_address(spec: SessionSpec) -> str:

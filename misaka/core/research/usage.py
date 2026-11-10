@@ -1,11 +1,8 @@
 """What a research run spent: tokens and money, by the conversations that spent them.
 
-2026-10-07 (GitHub issue #9): a run's spending could not be seen anywhere. The board's ledger
-counts tokens against the cap (``budget_usage`` rows, a total each); what a call cost is kept
-where Pi keeps it, on each assistant message's ``usage.cost`` in the session file. A run's
-conversations are its root Last Order's (her window, from the run's start), every other folder
-the run opened in the session store (each node's Last Order, a command-line root), and each of
-its cards' session folders, every attempt and subagent included.
+Root/node conversation accounting keeps its workflow time scopes. Card accounting
+uses exact per-request board receipts: an instance transcript may span several
+cards and projects and is never itself a billing scope.
 """
 from __future__ import annotations
 
@@ -94,8 +91,14 @@ def run_usage(con, run):
         label = "root Last Order" if scope == "root-lo" else scope.replace("-", " ", 1)
         parts.append((label, session_usage(_sessions(folder), by_model=models)))
     for task in runs.tasks(con, run["id"]):
-        files = _sessions(task["session_dir"]) or [path for path in [task["session_file"]] if path]
-        parts.append((f"card {task['id']} (Sister {task['assignee']})", session_usage(files, by_model=models)))
+        spent = _blank()
+        for row in con.execute("SELECT payload FROM events WHERE task_id=? AND kind='budget_usage' ORDER BY id", (task["id"],)):
+            receipt = json.loads(row["payload"])
+            usage = receipt.get("usage") or {"totalTokens": receipt["totalTokens"]}
+            _add(spent, usage)
+            model = f"{receipt.get('provider') or '?'}/{receipt.get('model') or '?'}"
+            _add(models.setdefault(model, _blank()), usage)
+        parts.append((f"card {task['id']} (Sister {task['instance_id']})", spent))
     total = _blank()
     for _label, usage in parts:
         for key in FIELDS:

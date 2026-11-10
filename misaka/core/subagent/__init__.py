@@ -24,6 +24,8 @@ def disallowed_management_tools(kind, *, is_async=None):
 
 
 def part(spec):
+    if spec.instance_id:
+        return None
     # Built late by the assembly, after the worker's budget/identity environment is in place.
     from .extension import part_for
     return part_for(spec.profile_dir, spec.role, spec.workspace,

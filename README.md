@@ -1,6 +1,6 @@
 <p align="center"><img src="assets/banner.jpg" alt="MISAKA — designed by Luciole Studio" width="100%"></p>
 
-> 本个人助手开发分支已采用统一的任务请求／卡片／实例状态模型，旧 board 格式不迁移。当前范围、隔离验收命令与运行环境见 [第二阶段说明](docs/personal/stage-02-state.md)。
+> 本个人助手开发分支已接通实例配置与原生会话：Sister 跨卡复用上下文，Last Order 换会话读取当前状态，普通派活由 daemon 持有。当前格式不迁移。范围与隔离验收见 [第三阶段说明](docs/personal/stage-03-instances.md)。
 
 
 <h1 align="center">

@@ -97,6 +97,7 @@ LAYOUT: dict[str, Entry] = {
     "shared": Entry("shared", "shared"),
     "bin": Entry("cache/bin", "cache"),
     "engine_cache": Entry("cache/engine", "cache"),
+    "instance_profiles": Entry("cache/instances", "cache"),
     "web_cache": Entry("cache/web", "cache"),
     "web_tools": Entry("cache/web-tools", "cache"),
     "office_cache": Entry("cache/office", "cache"),

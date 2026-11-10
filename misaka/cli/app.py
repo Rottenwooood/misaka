@@ -109,6 +109,9 @@ def _parser(extension_commands=None):
     nc.add_argument("pane_id")
     nx = nt_sub.add_parser("explain", help="Explain why a pane is busy or idle")
     nx.add_argument("pane_id", nargs="?")
+    for action in ("pause-instance", "resume-instance", "instance-status"):
+        action_parser = nt_sub.add_parser(action, help="Control or inspect the original instance writer")
+        action_parser.add_argument("instance_id")
     nt_sub.add_parser("stop", help="Stop the daemon and close every pane")
     sub.add_parser("net-daemon", help="Internal: the Misaka Network daemon")
     cs = sub.add_parser("card-shell", help="Internal: run a card session inside a pane")
@@ -123,14 +126,12 @@ def _parser(extension_commands=None):
     sub.add_parser("ally-bridge", help="Internal: the MCP server lending an ally its card's tools")
 
     sub.add_parser("panel", help="Open the Misaka Network panel (default in a terminal)")
-    ch = sub.add_parser("chat", help="Chat with Last Order, or with a Sister via --as")
+    ch = sub.add_parser("chat", help="Open an instance current session (default: the sole Last Order)")
     ch.add_argument("--model", help="Override the model")
+    ch.add_argument("--prompt", help="Run one non-interactive turn in this instance current session")
     ch.add_argument("-s", "--skills", action="append", help="Preload Skill names; repeat or separate with commas")
-    ch.add_argument("--as", dest="as_agent", metavar="SISTER",
-                    help="Chat with this Sister instead of Last Order")
-    ch.add_argument("-c", "--continue", dest="cont", action="store_true",
-                    help="Continue the most recent session instead of starting a new one")
-    ch.add_argument("--pick", action="store_true", help="Pick a past session to resume")
+    ch.add_argument("--instance", dest="as_agent", metavar="ID",
+                    help="Open this registered instance")
     source = ch.add_mutually_exclusive_group()
     source.add_argument("--session", help="Open a session by path or UUID prefix")
     source.add_argument("--catalog", help="With --attach/--read-only: locate an unsaved session")
@@ -268,9 +269,12 @@ def _doc_tree_lines(tree, depth=1):
 
 def _cmd_chat(args):
     from misaka.cli import chat
-    return chat.launch(args.as_agent, model=args.model, cont=args.cont, pick=args.pick,
-                       session=args.session, read_only=args.read_only, catalog=args.catalog, attach=args.attach,
-                       **({"skills": args.skills} if args.skills else {}))
+    try:
+        return chat.launch(args.as_agent, model=args.model, prompt=args.prompt,
+                           session=args.session, read_only=args.read_only, catalog=args.catalog, attach=args.attach,
+                           **({"skills": args.skills} if args.skills else {}))
+    except (ValueError, OSError) as error:
+        sys.exit(str(error))
 
 
 def _cmd_panel(args):
@@ -320,6 +324,17 @@ def _cmd_allies(args):
 
 
 def _cmd_net(args):
+    if args.net_cmd in ("pause-instance", "resume-instance", "instance-status"):
+        import asyncio
+        import json
+
+        from misaka.core.platform.instances import control
+        operation = {"pause-instance": "pause", "resume-instance": "resume", "instance-status": "snapshot"}[args.net_cmd]
+        try:
+            print(json.dumps(asyncio.run(control(args.instance_id, operation)), ensure_ascii=False))
+        except (OSError, ValueError, TimeoutError) as error:
+            sys.exit(str(error))
+        return
     from misaka.ui.panel import client as net
     if args.net_cmd == "stop":
         try:

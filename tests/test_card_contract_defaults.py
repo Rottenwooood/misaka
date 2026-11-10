@@ -13,7 +13,7 @@ from test_agent_model_runtime import (
 from test_subagent_native_startup import isolated as isolated  # noqa: PLC0414
 
 from misaka.config import home
-from misaka.core.network import sister_runtime, worker
+from misaka.core.network import worker
 from misaka.core.research import planner, report
 from misaka.core.subagent.agents import AgentDefinition
 from misaka.core.subagent.runtime import SubagentManager
@@ -106,17 +106,23 @@ def test_a_described_deliverable_is_told_to_lead_with_a_filename_and_names_its_t
 
 
 def card_flags(root, monkeypatch, model=None):
+    from contextlib import closing
+
     from misaka.config import identity, sessions
     from misaka.core import wiring
+    from misaka.core.platform import tasks, work
+    with closing(tasks.connect(str(home.path("db")))) as con:
+        if not con.execute("SELECT 1 FROM instances WHERE id='card-sister'").fetchone():
+            work.apply(con, [{"op": "template.create", "id": "card-role", "role": "sister", "config": {"model": "fixture-a/shared"}},
+                             {"op": "instance.create", "id": "card-sister", "template_id": "card-role", "template_revision": 1}])
 
     monkeypatch.setattr(worker.task_store, "task_state_dir", lambda _: str(root / "state"))
     monkeypatch.setattr(sessions, "card_session_dir", lambda _: str(root / "cards"))
     monkeypatch.setattr(worker.skill_sandbox, "snapshot_stack", lambda *args: None)
     monkeypatch.setattr(identity, "base_prompt_sources", lambda *args: [])
     monkeypatch.setattr(wiring, "assemble", lambda spec: NS(spec=spec))
-    row = {"id": "fixture", "model": model, "body": "Task"}
-    return worker.card_session_setup(row, str(root / "workspace"), str(home.path("profiles_root") / "10032"),
-                                     "fixture-global", "global")[0]
+    row = {"id": "fixture", "model": model, "body": "Task", "instance_id": "card-sister"}
+    return worker.card_session_setup(row, str(root / "workspace"))[0]
 
 
 @pytest.mark.parametrize("preference", [None, "medium"])
@@ -148,7 +154,7 @@ async def test_card_start_uses_defaults_and_native_resume(local_models, monkeypa
     assert len(requests) == 1
 
 
-@pytest.mark.parametrize("manager_type,expected", [(SubagentManager, "off"), (sister_runtime._SisterManager, None)])
+@pytest.mark.parametrize("manager_type,expected", [(SubagentManager, "off")])
 async def test_only_board_sister_drops_generic_child_thinking_override(tmp_path, monkeypatch, manager_type, expected):
     manager = object.__new__(manager_type)
     monkeypatch.setattr(manager, "_refresh_task_project_trust", lambda task: None)
@@ -162,46 +168,3 @@ async def test_only_board_sister_drops_generic_child_thinking_override(tmp_path,
         assert "--thinking" not in flags
     else:
         assert flags[flags.index("--thinking") + 1] == expected
-
-
-@pytest.mark.parametrize("override", [None, "fixture-a/shared:low"])
-async def test_managed_sister_native_registration_defaults_and_resume(local_models, monkeypatch, override):
-    root, requests = local_models
-    models_path = home.path("models")
-    models = json.loads(models_path.read_text(encoding="utf-8"))
-    models["providers"]["fixture-a"]["models"][0].update(
-        reasoning=True, compat={"forceAdaptiveThinking": True})
-    models_path.write_text(json.dumps(models), encoding="utf-8")
-    settings_path = home.path("settings")
-    settings = json.loads(settings_path.read_text(encoding="utf-8"))
-    settings["defaultThinkingLevel"] = "high"
-    settings_path.write_text(json.dumps(settings), encoding="utf-8")
-    card_flags(root, monkeypatch)  # isolate state/skill/identity paths, not session registration
-    row = {"id": "fixture", "model": override, "assignee": "10032", "generation": 1,
-           "claim_lock": "fixture", "output_dir": str(root / "workspace")}
-    cfg = {"profiles_root": str(home.path("profiles_root")), "provider": "fixture-global",
-           "default_model": "global", "db": str(root / "fixture.db")}
-    async with opened(root, "last_order", "foreground") as (_, parent):
-        assert parent.thinkingLevel == "off"  # the parent's model cannot reason
-        manager = sister_runtime._SisterManager(parent, cfg, row, str(root / "workspace"))
-        task = await manager.create_task(
-            definition=manager.resolve_definition(None, str(root / "workspace")), description="Fixture Sister",
-            prompt="Fixture", model=None, background=False, name=None, isolation=None,
-            cwd=None, tool_call_id="", context=parent)
-        try:
-            seed = [json.loads(line) for line in task.transcript.read_text(encoding="utf-8").splitlines()]
-            assert [entry["type"] for entry in seed] == ["session"]
-            flags = await manager._child_flags(task)
-            async with opened(root, "sisters/10032", "card", flags) as (_, child):
-                assert child.thinkingLevel == ("low" if override else "high")
-                await prompt(child, "MANAGED_FRESH")
-                child.setThinkingLevel("medium")
-            flags = await manager._child_flags(task)
-            async with opened(root, "sisters/10032", "card", flags) as (_, child):
-                assert child.thinkingLevel == ("low" if override else "medium")
-                await prompt(child, "MANAGED_RESUME")
-        finally:
-            task.status = "completed"  # no process was launched for this registered fixture
-            await manager.close()
-    expected = ["low", "low"] if override else ["high", "medium"]
-    assert [payload["output_config"]["effort"] for _, payload in requests] == expected

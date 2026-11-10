@@ -222,7 +222,10 @@ def meter(model: Any, context: Any, options: Any, send) -> AssistantMessageEvent
             if current:
                 try:
                     await asyncio.shield(asyncio.to_thread(
-                        budget.settle_request_path, current[0], lease, current[1], current[2], used))
+                        budget.settle_request_path, current[0], lease, current[1], current[2], used,
+                        provider=read_field(model, "provider"), model=read_field(model, "id"),
+                        usage=(read_field(message, "usage").model_dump() if message is not None
+                               and hasattr(read_field(message, "usage"), "model_dump") else read_field(message, "usage", {}) or {})))
                 except Exception:  # a lost receipt must not lose the reply; the lease expires and is charged
                     logger.warning("token ledger: a request's usage (%s tokens) was not recorded", used, exc_info=True)
         if terminal is not None:

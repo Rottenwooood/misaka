@@ -71,6 +71,7 @@ def _card(panel, workspace, *, status="done", title="T4 crossover", assignee="10
     transcript = os.path.join(directory, "2026-09-18T00-00-00-000Z_fixture.jsonl")
     with open(transcript, "w", encoding="utf-8") as handle:
         handle.write(json.dumps({"type": "session", "id": "fixture", "cwd": str(workspace)}) + "\n")
+    tasks.set_runtime(con, task_id, None, transcript)
     return task_id, transcript
 
 
@@ -338,12 +339,13 @@ async def test_a_card_that_never_ran_starts_from_its_contract_with_the_note_mail
 
     task_id, transcript = _card(panel, home, status="stopped")
     os.unlink(transcript)                                   # never got as far as a transcript
+    db.set_runtime(panel._board(), task_id, None, None)
     panel._mcon = messages.connect(str(home / "messages.db"))
     pane = await panel.continue_card(task_id, "start with the 1982 edition")
     assert "--resume" not in pane.argv and "--say" not in pane.argv
     row = db.get(panel._board(), task_id)
     assert row["status"] == "running"
-    mail = messages.pending(panel._mcon, "10032", task_id=task_id)
+    mail = messages.pending(panel._mcon, row["instance_id"], task_id=task_id)
     assert [m["body"] for m in mail] == ["start with the 1982 edition"]
     assert mail[0]["to_task"] == task_id and mail[0]["generation"] == row["generation"]
     assert mail[0]["sender"] == "last-order"
@@ -477,14 +479,13 @@ async def test_a_card_answers_a_message_while_its_parent_is_running(panel, home)
     assert tasks.get(con, b)["status"] == "running"
 
 
-async def test_a_card_for_a_sister_no_longer_in_the_roster_fails_for_good(panel, home):
-    """Left ready, the panel asked for it on every poll and the research never ended; headless
-    dispatch already failed it as a configuration fault (0.18.10 sweep)."""
-    from misaka.core.platform import tasks
+async def test_a_retired_instance_cannot_start_a_new_card(panel, home):
     workspace = home / "proj"
     workspace.mkdir()
     tid, _ = _card(panel, workspace, status="ready", assignee="10099")
-    with pytest.raises(ValueError, match="not in the roster"):
-        await panel.run_card(tid)
     row = tasks.get(panel._board(), tid)
-    assert row["status"] == "failed" and "not in the roster" in row["last_failure_error"]
+    panel._board().execute("UPDATE instances SET retired=1 WHERE id=?", (row["instance_id"],))
+    panel._board().commit()
+    with pytest.raises(ValueError, match="retired"):
+        await panel.run_card(tid)
+    assert tasks.get(panel._board(), tid)["status"] == "ready"

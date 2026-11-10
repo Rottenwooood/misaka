@@ -162,7 +162,7 @@ class PanelPart:
                 branch_manager.rewrite_file()
             chat = [sys.executable, "-m", "misaka", "chat"]
             if role != "last_order":           # chat.py -- Last Order's role name
-                chat += ["--as", who]
+                chat += ["--instance", who]
             created = request("pane.create",
                               {"argv": [*chat, "--session", branched], "cwd": manager.getCwd(),
                                "title": "Last Order" if role == "last_order" else who,

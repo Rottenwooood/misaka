@@ -51,6 +51,10 @@ def world(tmp_path, monkeypatch):
     index = session_catalog._index_dir()
     index.mkdir(parents=True, exist_ok=True)
     board = tasks.connect(CFG["db"])
+    from misaka.core.platform import work
+    work.apply(board, [{"op": "template.create", "id": "contact", "role": "sister", "config": {}}, *[
+        {"op": "instance.create", "id": iid, "template_id": "contact", "template_revision": 1}
+        for iid in ("10032", "10036", "10037", "10038")]])
     mail = messages.connect()
     workspace = tmp_path / "project"
     workspace.mkdir()

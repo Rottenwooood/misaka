@@ -12,16 +12,6 @@ from misaka.core.network import worker
 from misaka.core.platform import admission, budget
 from misaka.core.platform import tasks as db
 
-_skipped_logged = set()
-
-
-def _profile_dir(cfg, assignee):
-    for root in (cfg["profiles_root"], cfg["roles_root"]):
-        d = os.path.join(root, assignee)
-        if os.path.isdir(d):
-            return d
-    return None
-
 
 def _event_summary(d, nbytes):
     """Summarize an oversized harness event: keep its type, tool name, and first line of text."""
@@ -179,22 +169,6 @@ def run_task(con, t, cfg, *, say=None):
     host_cap, assignee_cap = admission.limits()
     identity = _worker_identity()
     ally = t["assignee"] in presets.names()
-    profile_dir = None if ally else _profile_dir(cfg, t["assignee"])
-    if not ally and not profile_dir:
-        if (t["id"], t["generation"]) not in _skipped_logged:    # a reopened card gets a fresh look
-            _skipped_logged.add((t["id"], t["generation"]))
-            lock = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
-            generation = int(t["generation"])
-            if db.claim(con, t["id"], lock, ttl_seconds=60,
-                        generation=generation, pid=os.getpid(), worker_identity=identity,
-                        host_cap=host_cap, assignee_cap=assignee_cap):
-                reason = f"Assignee profile not found: {t['assignee']}"
-                db.add_event(con, t["id"], "failed", {"reason": reason},
-                             generation=generation, claim_lock=lock)
-                db.mark_failed(con, t["id"], generation=generation, claim_lock=lock,
-                               failure_kind="configuration", reason=reason)
-        return False
-
     lock = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
     generation = int(t["generation"])
     if say is not None:
@@ -260,7 +234,7 @@ def run_task(con, t, cfg, *, say=None):
             usage_db = None
     try:
         verdict = _run_ally(con, task, generation, lock, usage_db, say) if ally else worker.run_card(
-            task, run_dir, profile_dir, cfg["provider"], cfg["default_model"],
+            task, run_dir,
             on_event=lambda line: (event := _compact_event(line)) is not None and db.add_event(
                 con,
                 t["id"],

@@ -36,18 +36,6 @@ def _session_id(ctx):
     return getattr(getattr(ctx, "sessionManager", None), "sessionId", None) or None
 
 
-def _mail_running_card(row, text, summary, sender_session):
-    """A note for the attempt now running a card, from Last Order, through the card's inbox."""
-    from misaka.core.network import messages
-    con = messages.connect()
-    try:
-        return messages.send(con, row["assignee"], text, summary=summary, sender="last-order",
-                             to_task=row["id"], generation=int(row["generation"]),
-                             sender_session=sender_session)
-    finally:
-        con.close()
-
-
 def _session_line(ctx, limit=10):
     """This conversation's session id plus the ids it was forked from (header
     ``parentSession`` chain): a fork mints a new id, but the cards stamped before the
@@ -508,13 +496,6 @@ def _install(harn, runtime):
     async def misaka_sister(tool_call_id, params, signal, on_update, ctx):
         if not params.confirmed:
             return _text("Work was not started. Show the plan and wait for explicit user approval.")
-        row = db.get(_con(), params.task_id)
-        if os.environ.get("MISAKA_NET_PANE") and row is not None and row["status"] == "ready":
-            from misaka.ui.panel import client as net
-            out = await asyncio.to_thread(
-                net.request, "pane.run_card",
-                {"task_id": params.task_id, "place": {"grid": os.environ["MISAKA_NET_PANE"]}})
-            return _text(f"Card {params.task_id} started in pane {out['pane_id']}.")
         result = await runtime.launch(
             params.task_id,
             context=ctx,
@@ -627,64 +608,10 @@ def _install(harn, runtime):
                 f"Task card {params.task_id} is under review; wait for the review before messaging its Sister."
             )
 
-        in_panel = bool(os.environ.get("MISAKA_NET_PANE"))
-        try:
-            pane = await asyncio.to_thread(_pane_for_card, params.task_id)
-        except (ConnectionError, OSError, RuntimeError):
-            pane = None
-        row = db.get(_con(), params.task_id)
-        if row is None or int(row["generation"]) != params.generation:
-            generation = row["generation"] if row is not None else "missing"
-            raise ValueError(
-                f"Card {params.task_id} moved to generation {generation}; "
-                f"the reply for generation {params.generation} is stale."
-            )
-        if row["status"] == "review":
-            return _text(
-                f"Task card {params.task_id} is under review; wait for the review before messaging its Sister."
-            )
         help_reply = (
             row["status"] in {"blocked", "triage"}
             and row["block_kind"] == "needs_input"
         )
-        ally = row["assignee"] in _allies()
-        if row["status"] == "running" and pane and pane.get("claimed", True):
-            # A running Sister is steered through her own inbox, addressed to this attempt: the
-            # note is durable, lands at her next tool boundary as a steering message rather than
-            # as keystrokes in her editor, and does not depend on the pane's input queue
-            # (2026-09-18: pane.send lost the Enter behind a full pty queue, B1, and could
-            # land in a reader pane, B14). The pane stays the way to *see* her.
-            mid = await asyncio.to_thread(
-                _mail_running_card, row, params.message, params.summary, _session_id(ctx))
-            _card_log(row["workspace"], params.task_id, "last-order", f"[steer] {params.message}")
-            when = ("the ally reads it between turns: at once if it is idle, otherwise when its current turn ends"
-                    if ally else "her session reads it at its next tool boundary")
-            return _text(f"Message #{mid} queued for card {params.task_id} (attempt {row['generation']}); {when}.")
-        # An ally's attempt always runs in a daemon pane, with or without a panel.
-        if row["status"] != "running" and (in_panel or pane or help_reply or ally):
-            # The daemon drains any old pane/headless runner, then owns the new attempt beyond
-            # this contact turn. A finished card still only restarts on the user's nod.
-            if not (params.confirmed or help_reply):
-                return _text(f"Card {params.task_id} is {row['status']}; continuing it starts a new "
-                             "model turn. Ask the user, then call again with confirmed=true.")
-            from misaka.ui.panel import client as net
-            if not (in_panel or pane):
-                await asyncio.to_thread(net.ensure)
-            request = {
-                "task_id": params.task_id,
-                "say": params.message,
-                "expected_generation": params.generation,
-            }
-            if in_panel:
-                request["place"] = {"grid": os.environ["MISAKA_NET_PANE"]}
-            out = await asyncio.to_thread(net.request, "pane.continue_card", request)
-            _card_log(row["workspace"], params.task_id, "last-order", f"[message] {params.message}")
-            if not row["session_file"]:
-                return _text(f"Card {params.task_id} had never run, so its first attempt started in "
-                             f"pane {out['pane_id']} from its contract, with your note mailed to it "
-                             "for its first tool boundary.")
-            return _text(f"Continued card {params.task_id} in persistent runner {out['pane_id']} "
-                         "(a new attempt under the daemon's claim) and delivered the message.")
         result = await runtime.message(
             params.task_id,
             params.message,
@@ -851,17 +778,10 @@ def _install(harn, runtime):
     @_register(
         harn,
         name="misaka_sister_stop", label="Stop Sister task",
-        description="Stop a running Sister task after explicit user confirmation.",
+        description="Stop an active or waiting Sister task after explicit user confirmation.",
         snippet="Stop a running Sister task",
         parameters=SisterStopParams)
     async def misaka_sister_stop(tool_call_id, params, signal, on_update, ctx):
-        row = db.get(_con(), params.task_id)
-        if row is not None and str(row["claim_lock"] or "").startswith("net:"):
-            if not params.confirmed:
-                raise ValueError("Explicit user confirmation is required before stopping a Sister.")
-            from misaka.ui.panel import client as net
-            await asyncio.to_thread(net.request, "card.stop", {"task_id": params.task_id})
-            return _text(f"Stopped card {params.task_id} and closed its pane.")
         result = await runtime.stop(
             params.task_id,
             confirmed=params.confirmed,
@@ -1133,9 +1053,8 @@ class NetworkPart:
         sees it finish. Its terminal event lands in the durable outbox, and until this
         loop the only readers were session start and ``before_agent_start`` -- so a
         coordinator who said "wait for the notification" and then waited was never told.
-        The runtime's own in-process cards (``_notify``) deliver at once; this is the
-        same delivery for the cards it does not drive. The outbox leases and ACKs, so a
-        second reader is harmless. The runtime's connection is used on this loop only.
+        The durable outbox leases and ACKs delivery; no coordinator-side process
+        supervisor is involved. The runtime connection is used on this loop only.
         """
         workspace = _workspace(ctx)
         while True:

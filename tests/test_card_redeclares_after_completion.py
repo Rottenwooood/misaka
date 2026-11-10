@@ -47,8 +47,9 @@ def card(tmp_path, monkeypatch, request):
     tid = contract_card(con, str(tmp_path), "T1 report", BODY, "10032")
     session_file = str(tmp_path / "sister.jsonl")
     con.execute("UPDATE tasks SET status='running', claim_lock='lock1', claim_expires=?, output_dir=?, "
-                "worker_pid=?, session_file=? WHERE id=?",
-                (int(time.time()) + 1800, str(out), os.getpid(), session_file, tid))
+                "worker_pid=? WHERE id=?",
+                (int(time.time()) + 1800, str(out), os.getpid(), tid))
+    tasks.set_runtime(con, tid, None, session_file)
     worker.record_output_baseline(con, tasks.get(con, tid))
     monkeypatch.setenv("MISAKA_USAGE_TASK_ID", tid)
     monkeypatch.setenv("MISAKA_USAGE_CLAIM_LOCK", "lock1")

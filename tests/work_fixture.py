@@ -105,7 +105,7 @@ class Scenario:
                 "op": "template.create",
                 "id": "sister",
                 "role": "sister",
-                "config": {"model": "model-v1", "tools": ["read"]},
+                "config": {"model": "test/model-v1", "tools": ["read"]},
             },
             {
                 "op": "instance.create",

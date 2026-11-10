@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from misaka.core.network import messages
+from misaka.core.network.sister_runtime import SisterRuntime
 from misaka.core.network.wiring import network
 from misaka.core.platform import tasks
 from misaka.core.wiring import ToolCollector
@@ -38,7 +39,7 @@ def world(tmp_path, monkeypatch, request):
     monkeypatch.setattr(network, "_pane_for_card",
                         lambda task_id: {"id": "p7", "card": task_id, "alive": True, "claimed": True})
     collector = ToolCollector()
-    network._install(collector, SimpleNamespace())
+    network._install(collector, SisterRuntime(None, lambda: con, dict))
     tool = next(t for t in collector.tools if t.name == "misaka_sister_message")
     ctx = SimpleNamespace(cwd=str(tmp_path), sessionManager=SimpleNamespace(sessionId=SESSION))
 
@@ -61,8 +62,9 @@ async def test_a_running_sister_is_steered_through_her_inbox(world):
     task_id = _running(world)
     out = await world.message(task_id, "check the 1982 edition first")
     text = out["content"][0]["text"]
-    assert "queued for card" in text and task_id in text
-    rows = messages.pending(world.mail(), "10032", task_id=task_id)
+    receipt = json.loads(text)
+    assert receipt["mode"] == "steer" and receipt["task_id"] == task_id
+    rows = messages.pending(world.mail(), tasks.get(world.con, task_id)["instance_id"], task_id=task_id)
     assert [r["body"] for r in rows] == ["check the 1982 edition first"]
     assert rows[0]["to_task"] == task_id and rows[0]["generation"] == 1
     assert rows[0]["sender"] == "last-order" and rows[0]["sender_session"] == SESSION
@@ -74,7 +76,7 @@ async def test_the_note_is_bound_to_the_attempt_that_is_running(world):
     world.con.execute("UPDATE tasks SET generation=3 WHERE id=?", (task_id,))
     world.con.commit()
     await world.message(task_id, "again", generation=3)
-    rows = messages.pending(world.mail(), "10032", task_id=task_id)
+    rows = messages.pending(world.mail(), tasks.get(world.con, task_id)["instance_id"], task_id=task_id)
     assert rows[0]["generation"] == 3
 
 
@@ -82,8 +84,8 @@ async def test_an_ally_is_steered_through_the_same_inbox_between_its_turns(world
     Path(os.environ["MISAKA_HOME"], "settings.json").write_text(json.dumps({"allies": {"codex": {}}}), encoding="utf-8")
     task_id = _running(world, assignee="codex")
     out = await world.message(task_id, "try the other branch")
-    assert "between turns" in out["content"][0]["text"]
-    assert [r["body"] for r in messages.pending(world.mail(), "codex", task_id=task_id)] == ["try the other branch"]
+    assert json.loads(out["content"][0]["text"])["mode"] == "steer"
+    assert [r["body"] for r in messages.pending(world.mail(), tasks.get(world.con, task_id)["instance_id"], task_id=task_id)] == ["try the other branch"]
     assert world.sent == [], "no keystrokes went to the pane"
 
 
@@ -91,4 +93,4 @@ async def test_a_stale_generation_is_refused_before_anything_is_sent(world):
     task_id = _running(world)
     with pytest.raises(ValueError, match="stale"):
         await world.message(task_id, "hello", generation=9)
-    assert world.sent == [] and messages.pending(world.mail(), "10032", task_id=task_id) == []
+    assert world.sent == [] and messages.pending(world.mail(), tasks.get(world.con, task_id)["instance_id"], task_id=task_id) == []

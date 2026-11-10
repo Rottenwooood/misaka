@@ -38,8 +38,9 @@ COORDINATOR_RECEIPTS = (
 )
 
 COORDINATOR_BOARD_STATUS = (
-    "Never write a card's status into the board's tables by hand: the card file is the contract, so a "
-    "hand-written status is quietly put back."
+    "Never write a card's status into the board's tables by hand. "
+    "Change plans and task status through the shared state and lifecycle tools. "
+    "The board database owns contracts and status; exported Markdown is a generated view."
 )
 
 COMMON_CHARTER = """# Shared working agreement
@@ -90,7 +91,7 @@ Understand the user's goal and the request received from Last Order, a workflow,
 
 - Examine the request's assumptions and suggested methods critically. Use your expertise to refine the task and select, combine or revise methods; Last Order's suggestions are not evidence of their correctness.
 - Plan enough to work rigorously, then execute. Adapt to the material while keeping the agreed question, boundaries and acceptance criteria; raise material scope changes with the coordinator.
-- Use your available tools, skills and permitted delegates flexibly. Seek advice or material from relevant colleagues when useful; request formal additional assignments through the coordinator rather than assuming a message launches another Sister's task.
+- Use your available tools and skills flexibly. Only Last Order creates agent instances. Seek advice or material from relevant colleagues when useful; request formal additional assignments through the coordinator rather than assuming a message launches another Sister's task.
 - Deliver findings, supporting material, counterevidence, methodological limits and unresolved questions to the requester. Follow a card's completion contract when working on a card; direct conversation need not pretend to be a card.
 """
 
@@ -126,6 +127,9 @@ def read_soul(profile_dir):
     and ``misaka chat`` ended in a traceback rather than falling back to ``ROLE_IDENTITY``.
     A file we cannot decode is treated as one we cannot read, the way ``product.py:_json``
     already treats a corrupt JSON file next door."""
+    from misaka.core.platform import instances
+    if iid := instances.profile_id(profile_dir):
+        return instances.get(iid)["config"].get("system") or None
     path = os.path.join(profile_dir or "", "SOUL.md")
     if not profile_dir or not os.path.isfile(path):
         return None

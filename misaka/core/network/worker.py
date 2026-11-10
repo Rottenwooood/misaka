@@ -10,7 +10,6 @@ from misaka.config import profiles
 from misaka.core.platform import tasks as task_store
 from misaka.core.platform.prompt_guard import untrusted
 from misaka.core.platform.session import run_coro, run_session
-from misaka.core.platform.vocabulary import MANAGEMENT_TOOLS
 from misaka.core.skills import sandbox as skill_sandbox
 from misaka.utils.paths import posix_relpath
 
@@ -539,8 +538,11 @@ def build_submission(con, task, summary):
     return submission
 
 
-def card_session_setup(task, workspace, profile_dir, provider, default_model):
+def card_session_setup(task, workspace):
     """Build the shared session configuration for headless and interactive cards."""
+    from misaka.core.platform import instances
+    profile_dir = instances.profile(task["instance_id"])
+    config = instances.get(task["instance_id"])["config"]
     model = profiles.explicit_model_override(profile_dir, task["model"])
     os.makedirs(workspace, exist_ok=True)
     state_dir = task_store.task_state_dir(task["id"])
@@ -558,19 +560,13 @@ def card_session_setup(task, workspace, profile_dir, provider, default_model):
     if model:
         flags += ["--model", model]
     ro_root = os.path.join(state_dir, ".skills-ro")
-    sender = role.rsplit("/", 1)[-1]
+    sender = task["instance_id"]
     from misaka.core.wiring import SessionSpec, assemble, spec_overrides
 
     kind = "beast" if beast else "card"
-    delegates = not profiles.is_last_order(profile_dir)
     skill_roots = None
     if beast:
-        # Beast mode gets no builtin tools: with DELEGATE it keeps only the child-management
-        # tools, otherwise none (Last Order has no DELEGATE, so it runs tool-less).
-        if delegates:
-            flags += ["-t", ",".join(MANAGEMENT_TOOLS)]
-        else:
-            flags += ["-nt"]
+        flags += ["-nt"]
     else:
         # Regular cards run against read-only copies of the role's skill stack: skills are
         # read-only at run time (constitution), and a card never sees the live tree.
@@ -584,7 +580,8 @@ def card_session_setup(task, workspace, profile_dir, provider, default_model):
         sender=sender,
         receive_messages=True,          # a card hears Last Order (and her Sisters) at its next tool boundary
         task_id=task.get("id"),
-        tool_ceiling=MANAGEMENT_TOOLS if beast and delegates else None,
+        instance_id=task["instance_id"],
+        startup_skills=tuple(config.get("skills", [])),
         skill_roots=skill_roots,
         research_context=bool(task.get("_research")),
         overrides=spec_overrides(task.get("_session_overrides")),
@@ -595,32 +592,18 @@ def card_session_setup(task, workspace, profile_dir, provider, default_model):
     return flags, assembly, prompt, ro_root, role
 
 
-def continue_flags(session_file, session_dir):
-    """Engine flags that go on in a card's own conversation, or None when it has none: the newest
-    transcript in its session folder -- after an in-pane fork the recorded path is the pre-fork
-    line and the branched file is newer -- else the recorded one. One rule for a pane
-    (``card_shell``) and a headless continuation (``run_card``)."""
-    try:
-        files = [os.path.join(session_dir, n) for n in os.listdir(session_dir) if n.endswith(".jsonl")]
-    except OSError:
-        files = []
-    try:
-        newest = max(files, key=os.path.getmtime) if files else None
-    except OSError:
-        newest = None
-    if newest:
-        return ["--session", newest]
-    if session_file and os.path.isfile(session_file):
-        return ["--session", session_file]
-    return None
+def continue_flags(session_file):
+    """Only the canonical pointer is resumable; a missing transcript is an error."""
+    if not session_file:
+        return None
+    if not os.path.isfile(session_file):
+        raise ValueError(f"Saved instance transcript is missing: {session_file}")
+    return ["--session", session_file]
 
 
 def run_card(
     task,
     workspace,
-    profile_dir,
-    provider,
-    default_model,
     on_event,
     *,
     usage_db=None,
@@ -631,15 +614,12 @@ def run_card(
 ):
     """Run one task card; its session lifecycle finalizes the board row."""
     task_id = task.get("id") if isinstance(task, dict) else None
-    flags, assembly, prompt, ro_root, role = card_session_setup(
-        task, workspace, profile_dir, provider, default_model
-    )
+    flags, assembly, prompt, ro_root, role = card_session_setup(task, workspace)
+    profile_dir = assembly.spec.profile_dir
     if task.get("_say") is not None:
         # A settled card continued with a message (``dispatch.run_task(say=...)``): the turn goes on
         # in her own conversation and is the message alone, as ``card-shell --resume --say`` is in
         # a pane -- the contract she already worked from is not sent again.
-        from misaka.config import sessions as session_roots
-        flags += continue_flags(task.get("session_file"), session_roots.card_session_dir(task)) or []
         prompt = task["_say"]
     from misaka.config import env as env_file
 

@@ -564,6 +564,12 @@ class SettingsManager:
         role_dir = self._role_dir()
         if role_dir is None:
             raise RuntimeError("This session serves no role; there are no role settings to write")
+        from misaka.core.platform import instances
+        if iid := instances.profile_id(role_dir):
+            self.roleSettings = instances.mutate_settings(iid, apply)
+            self.roleSettingsLoadError = None
+            self.settings = self._merged()
+            return
         path = profiles.settings_path(role_dir)
         os.makedirs(role_dir, exist_ok=True)
         with FileLock(path + ".lock"):

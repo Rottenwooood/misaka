@@ -26,7 +26,6 @@ import time
 import psutil
 
 from misaka.config import CFG, home
-from misaka.config import sessions as session_roots
 from misaka.ui.panel import (
     geometry as hui,  # layout.rs port: split_at / remove_pane / pane_ids
 )
@@ -49,7 +48,7 @@ else:
 # Wire protocol version (strict equality, as in herdr). Bump it whenever *server
 # behaviour* changes, not only method/event shapes: an unbumped behaviour change
 # once let a stale daemon slip through the version gate.
-PROTOCOL = 55   # Canonical work-request/instance/card storage; incompatible with file-authoritative boards.
+PROTOCOL = 56   # Instance-owned sessions and persistent daemon execution.
 RING_CAP = 256 * 1024          # output tail kept per pane
 SEND_TIMEOUT = 8.0             # pane.send: how long a message may take to enter the pane before it counts as undelivered (under the client's 10 s request timeout)
 INPUT_TIMEOUT = 1.0            # pane.input: keystrokes and pastes wait this long, then stay queued (typing must not block the panel)
@@ -893,7 +892,7 @@ class Daemon:
         self._con = None            # board connection, opened on the first card run
         self._mcon = None           # mailbox connection, opened on the first panes.list with cards
         self._attached: dict[asyncio.StreamWriter, str] = {}   # subscribers: connection -> pane id
-        self._panels: set[asyncio.StreamWriter] = set()        # panels (attach "*"): when the last one leaves, so do we
+        self._panels: set[asyncio.StreamWriter] = set()        # frontends may detach without stopping execution
         self._clients: set[asyncio.StreamWriter] = set()
         self._stopping = asyncio.Event()
         self._socket_identity = None
@@ -1641,13 +1640,14 @@ class Daemon:
         seconds after its claim (2026-09-18, B16) -- is answered with ``transcript=None``."""
         from misaka.core.network.sister_runtime import ACTIVE_BOARD_STATUSES
         from misaka.core.platform import tasks as db
-        from misaka.core.session_manager import find_most_recent_session
         row = db.get(self._board(), task_id)
         if row is None:
             raise ValueError(f"Card not found: {task_id}")
         if row["status"] in ACTIVE_BOARD_STATUSES:
             raise ValueError(f"Card {task_id} is still {row['status']}; steer its running pane instead.")
-        transcript = find_most_recent_session(session_roots.card_session_dir(row))
+        transcript = row["session_file"]
+        if transcript and not os.path.isfile(transcript):
+            raise ValueError(f"Instance transcript is missing: {transcript}")
         if transcript is None and require_session:
             raise ValueError(f"Card {task_id} has no saved session to reopen.")
         return row, transcript
@@ -1702,8 +1702,9 @@ class Daemon:
         keeps its id, seat and size and only loses its program, and the card's other panes are
         closed. It runs after the board has granted the claim, so a refused attempt never
         empties the window it was not given."""
+        from misaka.core.platform import tasks as db
         leaving = []
-        for pane in [p for p in self.panes.values() if p.card == row["id"] and p is not keep]:
+        for pane in [p for p in self.panes.values() if p.card and db.get(con, p.card)["instance_id"] == row["instance_id"] and p is not keep]:
             leaving.append(pane.proc)
             self.close(pane.id)          # SIGTERM now; `_reap` escalates off the request
         if keep is not None:
@@ -1793,7 +1794,7 @@ class Daemon:
     def _mail_card(self, row, text, generation):
         """A note for one attempt at a card, from its Last Order, read by the card's inbox."""
         from misaka.core.network import messages
-        messages.send(self._mailbox(), row["assignee"], text, summary=text[:80].strip() or "note",
+        messages.send(self._mailbox(), row["instance_id"], text, summary=text[:80].strip() or "note",
                       sender="last-order", to_task=row["id"], generation=generation)
 
     async def run_card(self, task_id, place=None) -> Pane:
@@ -1817,18 +1818,10 @@ class Daemon:
         reuse = self._card_pane_to_reuse(task_id)
         from misaka.core.network.ally import presets
         if row["assignee"] not in presets.names():     # an ally's runner says itself why it cannot start
-            profile = os.path.join(_expand(CFG["profiles_root"]), row["assignee"])
-            if not os.path.isdir(profile):
-                # Failed for good, as headless dispatch fails it (a configuration fault): left
-                # ready, the card was asked for again on every poll and its research never ended.
-                reason = f"Sister {row['assignee']} is not in the roster."
-                generation = int(row["generation"])
-                lock = f"net:{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
-                if db.claim(con, task_id, lock, ttl_seconds=60, generation=generation, pid=os.getpid()):
-                    db.add_event(con, task_id, "failed", {"reason": reason}, generation=generation, claim_lock=lock)
-                    db.mark_failed(con, task_id, generation=generation, claim_lock=lock,
-                                   failure_kind="configuration", reason=reason)
-                raise ValueError(reason)
+            from misaka.core.platform import work
+            actor = work.instance(con, row["instance_id"])
+            if actor["retired"]:
+                raise ValueError(f"Instance {actor['id']} is retired; reassign its unstarted cards")
         generation = int(row["generation"])
         lock = f"net:{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
         host_cap, assignee_cap = admission.limits()
@@ -2096,19 +2089,17 @@ class Daemon:
             workspace = (db.canonical_workspace(params["workspace"])
                          if params.get("workspace") else None)
             from misaka.core.research import runs
-            from misaka.core.session_manager import find_most_recent_session
             contexts = runs.task_contexts(self._board())
             cards = []
             for r in self._board().execute(
-                    "SELECT id,status,title,assignee,workspace,origin_session,session_file,session_dir FROM card_state ORDER BY created_at"):
+                    "SELECT id,status,title,assignee,instance_id,workspace,origin_session,session_file FROM card_state ORDER BY created_at"):
                 context = contexts.get(r["id"])
                 project = context["workspace"] if context else r["workspace"]
                 if workspace and project != workspace:
                     continue
-                sess = session_roots.card_session_dir(r)
                 available = (os.path.isdir(r["workspace"] or "")
                              and os.path.isdir(project or ""))
-                transcript = find_most_recent_session(sess) if available else None
+                transcript = r["session_file"] if available and r["session_file"] and os.path.isfile(r["session_file"]) else None
                 cards.append({"id": r["id"], "status": r["status"], "title": r["title"],
                               "assignee": r["assignee"], "workspace": r["workspace"], "project": project,
                               "origin_session": r["origin_session"], "research": context,
@@ -2144,13 +2135,6 @@ class Daemon:
             seq = int(params.get("seq") or 0)
             if pane.reported and seq < pane.reported["seq"]:
                 return {"ok": False, "stale": True}
-            session_file = str(params.get("session") or "")
-            if pane.card and session_file and os.path.isabs(session_file):
-                from misaka.core.platform import tasks as db
-                row = db.get(self._board(), pane.card)
-                if row is not None and pane.generation is not None:
-                    db.set_runtime(self._board(), pane.card, row["agent_id"], session_file,
-                                   generation=pane.generation, claim_lock=pane.claim_lock)
             pane.reported = {"state": state, "message": str(params.get("message") or "")[:240],
                              "seq": seq,
                              # The session file this pane writes: the panel marks its list with it.
@@ -2176,6 +2160,12 @@ class Daemon:
             hosting = [p for p in self.panes.values() if p.card == params["task_id"]]
             pane = next((p for p in hosting if p.claim_lock), hosting[0] if hosting else None)
             if pane is None:
+                from misaka.core.platform import tasks as db
+                row = db.get(self._board(), params["task_id"])
+                if row and row["status"] in {"blocked", "triage"} and params.get("research_owner") is None:
+                    with db.write_txn(self._board()):
+                        return {"stopped": db.mark_stopped(self._board(), row["id"],
+                            generation=params.get("expected_generation", row["generation"]))}
                 if "expected_generation" in params:
                     return {"stopped": False, "missing": True}
                 raise ValueError(f"Card {params['task_id']} is not running in a pane.")
@@ -2196,7 +2186,7 @@ class Daemon:
                     expected = params["expected_generation"]
                     lock = params.get("expected_claim_lock")
                     if (row is None or row["generation"] != expected or pane.generation != expected
-                            or row["claim_lock"] != lock or pane.claim_lock != lock):
+                            or row["claim_lock"] != lock or row["status"] == "running" and pane.claim_lock != lock):
                         return {"stopped": False, "stale": True}
                 from misaka.core.platform import processes
                 # Mid-takeover a pane has no program of its own; the stop still stands, and
@@ -2204,6 +2194,7 @@ class Daemon:
                 pid = pane.proc.pid if pane.proc else None
                 identity = processes.identity(pid) if pid else None
                 self.close(pane.id, expected_generation=params.get("expected_generation"))
+                db.mark_stopped(self._board(), params["task_id"], generation=params.get("expected_generation"))
                 return {"stopped": True, "pid": pid, "identity": identity}
         if method == "layout.get":       # the daemon owns the layout (herdr server model)
             open_ids = {space["id"] for space in self.spaces}
@@ -2416,13 +2407,8 @@ class Daemon:
             self._clients.discard(writer)
             self._attached.pop(writer, None)
             if writer in self._panels:
-                # The panel left (detach key, closed terminal window, crash, kill): nothing keeps
-                # running behind the user's back. Last Order and the Sisters shut down with it;
-                # run() closes every pane on the way out. A daemon that never had a panel (pure
-                # `misaka net ...` use) is unaffected and still ends with `misaka net stop`.
                 self._panels.discard(writer)
-                if not self._panels:
-                    self._stopping.set()
+                # Detaching a Panel leaves daemon-owned work running.
             writer.close()
 
     async def run(self):

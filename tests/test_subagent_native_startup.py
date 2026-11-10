@@ -183,22 +183,20 @@ async def test_native_first_turn_and_resume(isolated, endpoint, kind, background
 
 @pytest.mark.parametrize("endpoint", ["outputs/card/report.md"], indirect=True)
 async def test_background_child_uses_live_card_output_grant(isolated, endpoint, monkeypatch):
-    import sqlite3
-
     from misaka.core.network.todo import TodoPart
     from misaka.core.platform import tasks
 
     manager, session = host(isolated)
-    con = sqlite3.connect(":memory:")
-    con.row_factory = sqlite3.Row
-    con.execute("CREATE TABLE tasks(id TEXT, status TEXT, generation INTEGER, claim_lock TEXT, workspace TEXT, output_dir TEXT)")
+    from tests.factories import execution_card
+    con = tasks.connect(str(isolated / "grant-board.db"))
     output = Path(session.cwd) / "outputs/card"
-    con.execute("INSERT INTO tasks VALUES ('fixture-card', 'running', 1, 'fixture-owner', ?, ?)", (session.cwd, str(output)))
+    tid = execution_card(con, "Native child output grant", "Write the assigned report", "10032", workspace=session.cwd)
+    con.execute("UPDATE tasks SET status='running',claim_lock='fixture-owner',output_dir=? WHERE id=?", (str(output), tid))
     part = TodoPart.__new__(TodoPart)
-    part.task_id, part._con, part._bdb, part.session = "fixture-card", con, tasks, session
+    part.task_id, part._con, part._bdb, part.session = tid, con, tasks, session
     session.moments = NS(parts=[part])
     session.getActiveToolNames = lambda: ["write", "read", "edit"]
-    monkeypatch.setenv("MISAKA_SISTER_OWNER_TASK_ID", "fixture-card")
+    monkeypatch.setenv("MISAKA_SISTER_OWNER_TASK_ID", tid)
     monkeypatch.setenv("MISAKA_SISTER_OWNER_GENERATION", "1")
     monkeypatch.setenv("MISAKA_SISTER_OWNER_CLAIM_LOCK", "fixture-owner")
     try:

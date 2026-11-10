@@ -8,7 +8,7 @@ import contextlib
 import os
 import sys
 
-from misaka.config import CFG, current_config
+from misaka.config import CFG
 from misaka.core.network import worker
 from misaka.core.platform import tasks as db
 
@@ -62,18 +62,9 @@ def launch(task_id, resume_only=False, say=None):
         sys.exit(f"Card {task_id}: its folder {workspace} no longer exists.")
     run_dir = workspace
     task["_attachments"] = attachments
-    profile_dir = os.path.join(os.path.expanduser(CFG["profiles_root"]), task["assignee"])
-    if not os.path.isdir(profile_dir):
-        sys.exit(f"Sister {task['assignee']} is not in the roster.")
-
-    cfg = current_config()
-    flags, assembly, prompt, ro_root, role = worker.card_session_setup(
-        task, workspace, profile_dir, cfg["provider"], cfg["default_model"]
-    )
-    from misaka.config import sessions as session_roots
-
-    session_dir = session_roots.card_session_dir(task)
-    cont = worker.continue_flags(task["session_file"], session_dir)
+    flags, assembly, prompt, ro_root, role = worker.card_session_setup(task, workspace)
+    profile_dir = assembly.spec.profile_dir
+    cont = worker.continue_flags(task["session_file"])
     if resume_only:
         # Open the existing session only; never resend the contract, which would rerun the card.
         if not cont:

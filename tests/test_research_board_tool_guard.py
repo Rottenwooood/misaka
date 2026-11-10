@@ -112,15 +112,15 @@ async def test_research_continuation_preserves_confirmation_and_generation(board
     board.con.commit()
     monkeypatch.setenv("MISAKA_NET_PANE", "fixture")
     monkeypatch.setattr(network, "_pane_for_card", lambda *_: None)
-    sent = []
-    monkeypatch.setattr(net, "request", lambda *args: sent.append(args) or {"pane_id": "fixture"})
+    # Panel and headless callers now hand off to the same client boundary.
+    monkeypatch.setattr(net, "request", lambda *_: pytest.fail("tool adapter bypassed its runtime client"))
     await board.call("misaka_sister_message", task_id=board.research, message="Fixture reply",
                      summary="Fixture", generation=3, confirmed=confirmed)
-    assert bool(sent) == starts
-    if starts:
-        assert sent[0][0] == "pane.continue_card"
-        assert sent[0][1]["expected_generation"] == 3
+    board.runtime.message.assert_awaited_once()
+    options = board.runtime.message.call_args.kwargs
+    assert options["expected_generation"] == 3
+    assert options["confirmed"] is starts
     with pytest.raises(ValueError, match="stale"):
         await board.call("misaka_sister_message", task_id=board.research, message="Stale reply",
                          summary="Fixture", generation=2, confirmed=True)
-    assert len(sent) == int(starts)
+    assert board.runtime.message.await_count == 1

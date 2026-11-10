@@ -36,6 +36,9 @@ def role_settings(profile_dir, *, strict=False):
     """The role's own settings as written, ``{}`` when she has none (or, unless strict, none readable)."""
     if not profile_dir:
         return {}
+    from misaka.core.platform import instances
+    if iid := instances.profile_id(profile_dir):
+        return instances.settings(iid)
     try:
         with open(settings_path(profile_dir), encoding="utf-8-sig") as handle:
             data = json.load(handle)
@@ -112,6 +115,11 @@ def persist_role_default_model(profile_dir, model_id, *, strict=False):
         if strict:
             raise ValueError(f"A role pin is a provider/model reference, not {model_id!r}")
         return False
+    from misaka.core.platform import instances
+    if iid := instances.profile_id(profile_dir):
+        old = instances.settings(iid)
+        instances.mutate_settings(iid, lambda data: data.update(defaultProvider=provider, defaultModel=model))
+        return old != instances.settings(iid)
     try:
         from filelock import FileLock
 
@@ -136,6 +144,10 @@ def persist_role_thinking_level(profile_dir, level):
     that cannot be read or written."""
     from filelock import FileLock
 
+    from misaka.core.platform import instances
+    if iid := instances.profile_id(profile_dir):
+        instances.mutate_settings(iid, lambda data: data.update(defaultThinkingLevel=level))
+        return
     os.makedirs(profile_dir, exist_ok=True)
     path = settings_path(profile_dir)
     with FileLock(path + ".lock"):

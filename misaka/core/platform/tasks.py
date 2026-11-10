@@ -53,9 +53,6 @@ CREATE TABLE IF NOT EXISTS tasks (
  workspace TEXT NOT NULL,
  output_dir TEXT,
  origin_session TEXT, -- id of the Last Order conversation that created the card
- agent_id TEXT,
- session_file TEXT,
- session_dir TEXT, -- stable storage address; survives runtime resets and workspace changes
  claim_lock TEXT,
  claim_expires INTEGER,
  worker_pid INTEGER,
@@ -82,14 +79,17 @@ CREATE TABLE IF NOT EXISTS tasks (
  completed_at INTEGER
 );
 CREATE VIEW IF NOT EXISTS card_state AS
- SELECT t.*, i.template_id AS assignee FROM tasks t JOIN instances i ON i.id=t.instance_id;
+ SELECT t.*, i.template_id AS assignee, i.agent_id, i.session_file,
+ 'state/sessions/instances/' || i.id AS session_dir
+ FROM tasks t JOIN instances i ON i.id=t.instance_id;
 CREATE TABLE IF NOT EXISTS task_dependencies (
  child_id TEXT NOT NULL REFERENCES tasks(id) DEFERRABLE INITIALLY DEFERRED,
  parent_id TEXT NOT NULL REFERENCES tasks(id) DEFERRABLE INITIALLY DEFERRED,
  PRIMARY KEY(child_id,parent_id),
  CHECK(child_id != parent_id)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS instance_one_running ON tasks(instance_id) WHERE status='running';
+CREATE UNIQUE INDEX IF NOT EXISTS instance_one_bound ON tasks(instance_id)
+ WHERE status IN ('running','review') OR (status IN ('blocked','triage') AND started_at IS NOT NULL);
 CREATE TABLE IF NOT EXISTS card_urls (
  task_id TEXT NOT NULL REFERENCES tasks(id),
  url TEXT NOT NULL,
@@ -167,7 +167,7 @@ CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, kind, id);
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
 """
-TASK_SCHEMA_VERSION = 10
+TASK_SCHEMA_VERSION = 11
 MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 # One failure model for every way an attempt can end badly -- a crash, a timeout, a provider
 # error, a turn that ended without settling the card. Each counts against the same limit and the
@@ -429,7 +429,13 @@ def _card_dispatchable(con, task_id, *, require_parents=True):
     row = get(con, task_id)
     if row is None:
         return False
-    if con.execute("SELECT 1 FROM card_state WHERE instance_id=? AND id!=? AND status='running'", (row["instance_id"],task_id)).fetchone():
+    reserved = con.execute(
+        "SELECT id,status FROM card_state WHERE instance_id=? AND id!=? AND "
+        "(status IN ('running','review') OR (status IN ('blocked','triage') AND started_at IS NOT NULL))",
+        (row["instance_id"], task_id),
+    ).fetchone()
+    if reserved:
+        _note_refusal(task_id, f"Instance {row['instance_id']} remains bound to {reserved['id']} ({reserved['status']})")
         return False
     if not require_parents:
         return True
@@ -970,44 +976,19 @@ def set_workspace(con, task_id, workspace, generation=None, claim_lock=None):
 
 @_serialized
 def set_runtime(con, task_id, agent_id, session_file, generation=None, claim_lock=None):
-    """Record the Sister's agent id and session file on the card so it can be addressed later."""
-    clauses = ["id=?"]
-    pointer = home.stored(session_file) if session_file else None
-    values = [agent_id, pointer, os.path.dirname(pointer) if pointer else None, task_id]
-    if generation is not None:
-        clauses.append("generation=?")
-        values.append(generation)
-    if claim_lock is not None:   # Same fence as set_workspace/set_pid: the lease must still be live.
-        clauses.extend(["status='running'", "claim_lock=?", "claim_expires>=?"])
-        values.extend([claim_lock, int(time.time())])
+    """Publish transport identity on the instance; keep an immutable attempt pointer."""
     with _write_txn(con):
-        cur = con.execute(
-            f"UPDATE tasks SET agent_id=?, session_file=?, session_dir=COALESCE(session_dir,?) WHERE {' AND '.join(clauses)}",
-            tuple(values),
-        )
-        if cur.rowcount == 1:
-            con.execute(
-                "UPDATE task_runs SET session_file=? WHERE id=(SELECT current_run_id FROM card_state WHERE id=?)",
-                (pointer, task_id),
-            )
-        return cur.rowcount == 1
-
-
-@_serialized
-def clear_runtime(con, task_id, generation=None, claim_lock=None):
-    clauses = ["id=?"]
-    values = [task_id]
-    if generation is not None:
-        clauses.append("generation=?")
-        values.append(generation)
-    if claim_lock is not None:
-        clauses.extend(["status='running'", "claim_lock=?"])
-        values.append(claim_lock)
-    cur = con.execute(
-        f"UPDATE tasks SET agent_id=NULL, session_file=NULL WHERE {' AND '.join(clauses)}",
-        tuple(values),
-    )
-    return cur.rowcount == 1
+        row = get(con, task_id)
+        if row is None or generation is not None and row["generation"] != generation:
+            return False
+        if claim_lock is not None and (row["status"] != "running" or row["claim_lock"] != claim_lock
+                                       or (row["claim_expires"] or 0) < int(time.time())):
+            return False
+        pointer = home.stored(session_file) if session_file else None
+        con.execute("UPDATE instances SET agent_id=?,session_file=? WHERE id=?",
+                    (agent_id, pointer, row["instance_id"]))
+        con.execute("UPDATE task_runs SET session_file=? WHERE id=?", (pointer, row["current_run_id"]))
+        return True
 
 
 @_serialized
@@ -1643,7 +1624,7 @@ def reopen_task(
         generation = int(row["generation"]) + 1
         cur = con.execute(
             "UPDATE tasks SET status=?,generation=?,started_at=NULL,completed_at=NULL,"
-            "agent_id=NULL,session_file=NULL,claim_lock=NULL,claim_expires=NULL,"
+            "claim_lock=NULL,claim_expires=NULL,"
             "worker_pid=NULL,worker_identity=NULL,review_rounds=0,"
             "review_feedback=NULL,review_lock=NULL,review_expires=NULL,review_pid=NULL,"
             "review_identity=NULL,block_kind=NULL,"

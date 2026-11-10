@@ -302,6 +302,7 @@ class CatalogPart:
                  "pending": bool(path and not manager.flushed and not os.path.exists(path)),
                  "cwd": manager.getCwd(), "role": _role(self.spec.role) if self.spec else "unknown",
                  "kind": kind, "task_id": self.spec.task_id if self.spec else None,
+                 "instance_id": self.spec.instance_id if self.spec else None,
                  "workspace": getattr(self.spec, "workspace", None), "inbox": _inbox(self.spec),
                  "space": space,
                  "pid": self.pid, "identity": self.identity, "instance": self.instance, "state": state}
@@ -395,12 +396,15 @@ def list_entries(con, *, extra_paths=()):
     run_rows = {r["id"]: dict(r) for r in con.execute("SELECT * FROM research_runs")} if "research_runs" in tables else {}
     nodes = {r["id"]: dict(r) for r in con.execute("SELECT * FROM research_branches")} if "research_branches" in tables else {}
     links = {r["task_id"]: dict(r) for r in con.execute("SELECT * FROM research_run_tasks")} if "research_run_tasks" in tables else {}
+    actors = {r["id"]: dict(r) for r in con.execute(
+        "SELECT i.id,i.label,t.role FROM instances i JOIN templates t ON t.id=i.template_id AND t.revision=i.template_revision"
+    )} if "instances" in tables else {}
     cards = {}
     if "tasks" in tables:
-        for row in con.execute("SELECT * FROM card_state"):
-            directory = os.path.realpath(sessions.card_session_dir(row))
-            roots.add(directory)
-            cards[directory] = dict(row)
+        for row in con.execute("SELECT c.*,r.session_file AS attempt_session FROM task_runs r JOIN card_state c ON c.id=r.task_id ORDER BY r.started_at,r.rowid"):
+            if row["attempt_session"]:
+                path = str(home.from_stored(row["attempt_session"]))
+                cards[os.path.realpath(path)] = dict(row)
 
     records, ephemeral = {}, []
     alive = {}
@@ -444,15 +448,21 @@ def list_entries(con, *, extra_paths=()):
         if record.get("state") != "saved" and record.get("control"):
             row.update(control=record["control"], paused=record.get("paused", False))
         parts = _relative(path, product)
-        if len(parts) > 1 and parts[0] not in {"cards", "research", "subagents"}:
+        if len(parts) > 1 and parts[0] not in {"instances", "research", "subagents"}:
             row["role"] = record.get("role", _role(parts[0]))
             row["kind"] = "dm" if parts[1] == "dm" else record.get("kind", "foreground")
-        card = next((r for directory, r in cards.items() if _relative(path, directory)), None)
+        if len(parts) >= 3 and parts[0] == "instances":
+            row["instance_id"] = parts[1]
+            actor = actors.get(parts[1], {})
+            row["role"] = "last-order" if actor.get("role") == "last-order" else parts[1]
+            row["title"] = actor.get("label", parts[1])
+            row["kind"] = record.get("kind", "foreground")
+        card = cards.get(path)
         run, node = None, None
         if card:
             if not os.path.isdir(card["workspace"] or ""):
                 continue
-            row.update(task_id=card["id"], title=card["title"], role=_role(card["assignee"]),
+            row.update(task_id=card["id"], title=card["title"], role=card["instance_id"], instance_id=card["instance_id"],
                        kind="card", workspace=card["workspace"], cwd=card["workspace"], task_status=card["status"])
             link = links.get(card["id"], {})
             run, node = run_rows.get(link.get("run_id")), nodes.get(link.get("branch_id"))

@@ -49,10 +49,10 @@ def spent_run(tmp_path, monkeypatch):
                  _call("big", 200, 2.0, started + 2000), {"type": "message", "message": {"role": "user"}})
         tid = execution_card(con, "licences", assignee="10032", workspace=str(tmp_path))
         runs.link_task(con, run["id"], tid, kind="research", node=root, local_id="licences")
-        card = tmp_path / "sessions" / "cards" / tid
-        _session(card / "first.jsonl", _call("small", 50, 0.25, started + 3000))
-        _session(card / "retry.jsonl", _call("unpriced", 40, 0, started + 4000))
-        con.execute("UPDATE tasks SET session_dir=? WHERE id=?", (str(card), tid))
+        from misaka.core.platform import budget
+        for model, tokens, cost in (("small", 50, .25), ("unpriced", 40, 0)):
+            budget.settle_request(con, None, tid, 1, tokens, provider="p", model=model,
+                                 usage=_call(model, tokens, cost, started)["message"]["usage"])
         yield con, runs.get(con, run["id"]), child, tid
 
 
@@ -61,7 +61,7 @@ def test_a_run_is_added_up_by_conversation_and_model(spent_run):
     spent = usage.run_usage(con, run)
     parts = {label: (part["calls"], part["tokens"], part["cost"]) for label, part in spent["parts"]}
     assert parts == {"root Last Order": (1, 100, 1.0), f"node {child['id']}": (1, 200, 2.0),
-                     f"card {tid} (Sister 10032)": (2, 90, 0.25)}, "the window's talk before the run is not the run's"
+                     f"card {tid} (Sister {tasks.get(con, tid)['instance_id']})": (2, 90, 0.25)}, "the window's talk before the run is not the run's"
     assert (spent["total"]["tokens"], spent["total"]["cost"], spent["total"]["unpriced"]) == (390, 3.25, 1)
     assert set(spent["models"]) == {"p/big", "p/small", "p/unpriced"}
     assert usage.money(spent["total"]) == "$3.25 (+1 calls with no known price)"
@@ -74,7 +74,7 @@ def test_misaka_usage_prints_the_run_and_the_list(spent_run, monkeypatch, capsys
     monkeypatch.setattr(app.db, "connect", lambda path: con)
     app._cmd_usage(SimpleNamespace(run=run["id"], limit=10))
     out = capsys.readouterr().out
-    assert f"card {tid} (Sister 10032)" in out and "$3.25" in out and "By model:" in out
+    assert f"card {tid} (Sister {tasks.get(con, tid)['instance_id']})" in out and "$3.25" in out and "By model:" in out
     app._cmd_usage(SimpleNamespace(run=None, limit=10))
     assert run["id"] in capsys.readouterr().out
 

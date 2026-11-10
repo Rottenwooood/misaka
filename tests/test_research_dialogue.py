@@ -210,7 +210,6 @@ def test_a_headless_continuation_claims_a_new_generation_and_the_message_is_the_
     con.execute("UPDATE tasks SET status='done' WHERE id=?", (tid,))
 
     seen = []
-    lab.monkeypatch.setattr(dispatch, "_profile_dir", lambda cfg, assignee: str(lab.tmp))
     lab.monkeypatch.setattr(worker, "run_card", lambda task, *a, **k: seen.append(task) or {"settled": True})
     assert dispatch.run_task(con, tasks.get(con, tid), {"provider": "p", "default_model": "m"}, say="Review version 2.")
     [task] = seen
@@ -236,15 +235,15 @@ async def test_the_runners_continue_a_card_the_way_the_sister_tools_do(lab):
     assert spawned == [[*node_module.CARD_ARGV, "t_1", "--say", "go on"]] and "t_1" in headless.flying
 
 
-def test_a_card_goes_on_in_its_newest_own_conversation(tmp_path):
+def test_a_card_uses_its_saved_pointer_even_if_another_file_is_newer(tmp_path):
     folder = tmp_path / "cards" / "t_1"
     folder.mkdir(parents=True)
-    assert worker.continue_flags(None, str(folder)) is None
+    assert worker.continue_flags(None) is None
     older, newer = folder / "a.jsonl", folder / "b.jsonl"
     older.write_text("{}\n", encoding="utf-8")
     newer.write_text("{}\n", encoding="utf-8")
     os.utime(older, (1, 1))
-    assert worker.continue_flags(str(older), str(folder)) == ["--session", str(newer)]
+    assert worker.continue_flags(str(older)) == ["--session", str(older)]
 
 
 def test_the_final_report_is_written_from_indexed_documents_one_command_per_part(lab):
