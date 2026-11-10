@@ -42,7 +42,7 @@ def digest(roots):
     }
 
 
-def main(report_path=None):
+def main(report_path=None, *, interactive=False):
     if os.name != "posix":
         raise SystemExit("PTY acceptance currently requires POSIX.")
     import fcntl
@@ -78,6 +78,7 @@ def main(report_path=None):
             out = subprocess.run(
                 [sys.executable, "-m", "misaka", *args],
                 cwd=cwd,
+                stdin=subprocess.DEVNULL,
                 check=False,
                 env=env,
                 capture_output=True,
@@ -435,12 +436,34 @@ def main(report_path=None):
                         sys.executable,
                         "-u",
                         "-c",
-                        "import time; print('LO EXTERNAL FIXTURE', flush=True); time.sleep(120)",
+                        "import signal; print('LO EXTERNAL FIXTURE', flush=True); signal.pause()",
                     ],
                     "cwd": str(project),
                     "title": "Last Order",
                 },
             )["pane_id"]
+            if interactive:
+                for tid in (b, c, d):
+                    replace(tid, "status: done", "status: todo")
+                    runtime(tid, status="todo")
+                runtime(b, status="running")
+                print(
+                    "交互验证：Ctrl+B 后按 t 打开画布；q 关闭画布；Ctrl+B 后按 d 退出并清理。",
+                    flush=True,
+                )
+                print(
+                    "临时项目与测试会话；执行中标记为模拟数据，不请求模型。", flush=True
+                )
+                result = subprocess.run(
+                    [sys.executable, "-m", "misaka", "panel"],
+                    cwd=project,
+                    env={**env, "MISAKA_ALLOW_NESTED": "1"},
+                    check=False,
+                )
+                if result.returncode:
+                    raise SystemExit(result.returncode)
+                return
+
             master, slave = os.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 44, 140, 0, 0))
             saved = termios.tcgetattr(slave)
@@ -554,4 +577,9 @@ def test_external_task_view():
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else None)
+    if sys.argv[1:] == ["--interactive"]:
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            raise SystemExit("--interactive 需要在真实终端中运行。")
+        main(interactive=True)
+    else:
+        main(sys.argv[1] if len(sys.argv) > 1 else None)

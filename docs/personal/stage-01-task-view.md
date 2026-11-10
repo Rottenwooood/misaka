@@ -48,6 +48,12 @@ SQLite WAL 读者会参与标准共享内存协调；这是 SQLite 的锁区，�
 
 本阶段保留旧调度和协作流程。Sister 会话仍可通过既有 `chat --read-only --session ...` 查看；画布内打开会话、任务请求/实例持久模型、Last Order 新工具及 `/research` 的统一接入留给后续阶段。当前 polling 实现随后可切换到公共状态服务。
 
+## 亲手验证
+
+从仓库根目录运行 `python tests/test_task_view_e2e.py --interactive`。脚本先做隔离检查，再启动真实 Panel 客户端；默认 `Ctrl+B` 后按 `t` 打开画布。方向键和空白拖动平移；重复开图会聚焦已有窗格；`q` 只关闭画布；`Ctrl+B` 后按 `d` 退出 Panel 并清理临时目录与 daemon。
+
+此入口位于测试脚本，不是产品功能。所有卡片、home 和窗格属于临时验收环境，Last Order 是固定输出的外部测试进程，执行中记录为模拟输入，不请求模型。
+
 ## 验收
 
 ```bash
