@@ -3,6 +3,7 @@ process imported psutil, so two processes disagree about a third one's start tim
 that drift once it reaches a second (2026-09-18 B20/B33; pinned 2026-09-24: eight fork nodes
 refused their own claims, row `…154.054516` against the child's `…153.054516`). Identities are
 now compared within a tolerance; a reused PID starts hours later, so it is still told apart."""
+
 import os
 from contextlib import closing
 
@@ -10,6 +11,7 @@ import pytest
 
 from misaka.core.platform import processes, tasks
 from misaka.core.research import runs
+from tests.factories import research_run
 
 
 def _shifted(identity, seconds):
@@ -41,7 +43,7 @@ def test_liveness_accepts_a_recorded_identity_from_a_drifted_reader():
 
 def test_a_node_claims_its_row_although_the_parent_recorded_a_drifted_identity(tmp_path):
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
-        run = runs.create(con, workspace=str(tmp_path), question="Fixture question")
+        run = research_run(con, workspace=str(tmp_path), question="Fixture question")
         node = runs.nodes(con, run["id"])[0]
         key = runs.prepare_runner(con, "research_branches", node["id"])
         mine = processes.identity(os.getpid())

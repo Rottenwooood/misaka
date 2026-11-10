@@ -9,8 +9,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from misaka.core.platform import cards, repo, tasks
+from misaka.core.platform import repo, tasks, work
 from misaka.core.research import bundle, runs, workflow
+from tests.factories import contract_card, research_run
 
 
 @pytest.fixture
@@ -21,7 +22,8 @@ def state(tmp_path, monkeypatch):
         tasks, "task_state_dir", lambda tid: str(tmp_path / "task-state" / tid)
     )
     con = tasks.connect(str(tmp_path / "board.db"))
-    run = runs.create(con, workspace=str(tmp_path), question="fixture question")
+    run = research_run(con, workspace=str(tmp_path), question="fixture question")
+    work.apply(con,[{"op":"template.create","id":"fixture","role":"sister","config":{}}])
     try:
         yield con, run, runs.nodes(con, run["id"])[0]
     finally:
@@ -132,7 +134,7 @@ def test_research_registration_does_not_relabel_post_submission_bytes(state, mut
     from misaka.core.network import dispatch
 
     con, run, root = state
-    tid = cards.create(
+    tid = contract_card(
         con, run["workspace"], "fixture output", "fixture body", "fixture"
     )
     runs.link_task(con, run["id"], tid, kind="research", node=root, local_id="source")
@@ -319,7 +321,7 @@ async def test_takeover_between_assignments_stops_old_card_creation(state, takeo
         {
             "local_id": name,
             "title": name,
-            "instructions": "fixture",
+            "instructions": "fixture\n## acceptance criteria\n- Fixture evidence is recorded.",
             "assignee": "fixture",
             "dependencies": [],
         }
@@ -338,7 +340,8 @@ async def test_takeover_between_assignments_stops_old_card_creation(state, takeo
             con, run, root, specs, kind="research", progress=progress
         )
     except (ValueError, RuntimeError):
-        pass
+        if not takeover:
+            raise
     assert len(runs.tasks(con, run["id"])) == (1 if takeover else 2), (
         "old driver created another Board card after takeover"
     )
@@ -353,7 +356,7 @@ async def test_panel_root_shutdown_stops_owned_running_cards(
     from misaka.ui.panel import client
 
     con, run, root = state
-    tid = cards.create(con, run["workspace"], "fixture card", "fixture body", "fixture")
+    tid = contract_card(con, run["workspace"], "fixture card", "fixture body", "fixture")
     runs.link_task(con, run["id"], tid, kind="research", node=root, local_id="source")
     con.execute(
         "UPDATE tasks SET status='running',claim_lock='fixture',claim_expires=? WHERE id=?",
@@ -641,7 +644,7 @@ async def test_final_review_can_be_assigned_after_root_closed(state):
                 "local_id": "@final-review",
                 "title": "review",
                 "assignee": "fixture",
-                "instructions": "review",
+                "instructions": "review\n## acceptance criteria\n- Review findings are recorded.",
             }
         ],
         kind="final_review",
@@ -656,7 +659,7 @@ async def test_repeated_cancellation_drains_only_owned_card_scope(
     con, run, root = state
     runs.acquire_driver(con, run["id"], "old")
     run = runs.get(con, run["id"])
-    tid = cards.create(con, run["workspace"], "card", "body", "fixture")
+    tid = contract_card(con, run["workspace"], "card", "body", "fixture")
     runs.link_task(con, run["id"], tid, kind="research", node=root, local_id="test")
     con.execute(
         "UPDATE tasks SET status='running',claim_lock='claim' WHERE id=?", (tid,)
@@ -711,7 +714,7 @@ def test_panel_stop_rejects_successor_identity(state, generation, claim):
     from misaka.ui.panel.daemon import Daemon
 
     con, run, _ = state
-    tid = cards.create(con, run["workspace"], "card", "body", "fixture")
+    tid = contract_card(con, run["workspace"], "card", "body", "fixture")
     con.execute(
         "UPDATE tasks SET generation=?,claim_lock=? WHERE id=?",
         (generation, claim, tid),
@@ -749,7 +752,7 @@ async def test_cancel_after_assignment_before_drive_stops_new_card(state, monkey
             {
                 "local_id": "one",
                 "title": "one",
-                "instructions": "fixture",
+                "instructions": "fixture\n## acceptance criteria\n- Fixture evidence is recorded.",
                 "assignee": "fixture",
                 "dependencies": [],
             }
@@ -840,7 +843,7 @@ def test_attachment_manifest_boundary(state, change):
     from misaka.core.network import dispatch
 
     con, run, root = state
-    tid = cards.create(con, run["workspace"], "card", "body", "fixture")
+    tid = contract_card(con, run["workspace"], "card", "body", "fixture")
     runs.link_task(con, run["id"], tid, kind="research", node=root, local_id="one")
     row = tasks.get(con, tid)
     path = Path(row["output_dir"]) / "evidence.md"
@@ -921,7 +924,7 @@ def test_panel_stop_checks_driver_at_receipt_not_just_sender(state):
     from misaka.ui.panel.daemon import Daemon
 
     con, run, root = state
-    tid = cards.create(con, run["workspace"], "card", "body", "fixture")
+    tid = contract_card(con, run["workspace"], "card", "body", "fixture")
     con.execute("UPDATE tasks SET claim_lock='claim' WHERE id=?", (tid,))
     pane = SimpleNamespace(id="fixture", card=tid, generation=1, claim_lock="claim")
     daemon = Daemon.__new__(Daemon)
@@ -989,7 +992,7 @@ def test_caller_owned_sqlite_connection_uses_shared_transaction_callback(
     # The shared Board schema initializes the same supported caller-owned connection.
     con.executescript(tasks.SCHEMA)
     try:
-        run = runs.create(con, workspace=str(tmp_path), question="fixture")
+        run = research_run(con, workspace=str(tmp_path), question="fixture")
         name = runs.run_path(run, "checkpoint.md")
         aid, path = runs.write_text(con, run["id"], "draft", "Draft", name, "before")
         try:

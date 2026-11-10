@@ -1,4 +1,5 @@
 """The real driver owns one root through node expansion and final adjudication; no model calls."""
+
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 
 from misaka.core.platform import tasks
 from misaka.core.research import node, report, runs, window, workflow
+from tests.factories import research_run
 
 
 @pytest.fixture
@@ -19,7 +21,7 @@ def root_run(tmp_path, monkeypatch):
     monkeypatch.setattr(workflow, "settle_done_tasks", lambda *a, **k: None)
     monkeypatch.setattr(workflow, "_settle_stopped_tasks", AsyncMock())
     con = tasks.connect(str(tmp_path / "board.db"))
-    run = runs.create(con, workspace=str(tmp_path), question="Fixture root question")
+    run = research_run(con, workspace=str(tmp_path), question="Fixture root question")
     root = runs.nodes(con, run["id"])[0]
     session = SimpleNamespace(sessionManager=SimpleNamespace(sessionFile=str(tmp_path / "root.jsonl")))
     owner = SimpleNamespace(session=session, session_file=session.sessionManager.sessionFile,

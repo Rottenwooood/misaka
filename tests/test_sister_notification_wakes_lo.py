@@ -4,11 +4,13 @@
 recorded with triggerTurn off because "the phase consumes research results" -- but no phase
 was running, so nobody read it until the user asked. The exemption now holds only while the
 run is being driven."""
+
 import pytest
 
 from misaka.core.network import sister_runtime
 from misaka.core.platform import tasks
 from misaka.core.research import runs
+from tests.factories import research_run
 
 
 @pytest.fixture
@@ -19,13 +21,13 @@ def board(tmp_path):
 
 
 def test_a_driven_run_reads_its_own_results(board, tmp_path):
-    run = runs.create(board, workspace=str(tmp_path), question="why is the sky blue")
+    run = research_run(board, workspace=str(tmp_path), question="why is the sky blue")
     assert sister_runtime._research_run_active(board, {"run_id": run["id"]})
 
 
 @pytest.mark.parametrize("status", ["failed", "stopped", "done"])
 def test_a_run_nobody_drives_needs_last_order_woken(board, tmp_path, status):
-    run = runs.create(board, workspace=str(tmp_path), question="why is the sky blue")
+    run = research_run(board, workspace=str(tmp_path), question="why is the sky blue")
     runs.set_state(board, run["id"], status=status)
     assert not sister_runtime._research_run_active(board, {"run_id": run["id"]})
 

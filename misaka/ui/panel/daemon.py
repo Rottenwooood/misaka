@@ -49,7 +49,7 @@ else:
 # Wire protocol version (strict equality, as in herdr). Bump it whenever *server
 # behaviour* changes, not only method/event shapes: an unbumped behaviour change
 # once let a stale daemon slip through the version gate.
-PROTOCOL = 54   # 54: pane.continue_card takes {"consult": true}: a message wakes a finished card without sending its dependents back to todo; 53: panes.list takes {"tab_of": pane_id}, the panes of that pane's tab (Last Order's pane tools); 52: spaces have durable ids (state/spaces.json), a pane's program carries MISAKA_NET_SPACE, place {"space": id} reopens a remembered space, layout.get lists dormant spaces; 51: screen frames carry the program's content revision, a pane's OSC 52 copy reaches the panel, idle scrollback is compressed; 50: one home, one layout table -- a daemon from before it serves the old paths; 49: panes.list says which pane holds a card's claim, and a card is continued in the pane it already has; 48: pane.send/pane.input drain through a per-pane write queue and wait for delivery; 47: drag resizes are fire-and-forget (id=None, no reply) and the layout is persisted at drag end, so the divider never blocks on a busy daemon; 46: a drag resizes the program as fast as it repaints; 44: reflow held until repaint; 43: libghostty-vt; 42: panes.resize acknowledged first; 40: shown frame in a sync block; 38: input state, extract, kitty
+PROTOCOL = 55   # Canonical work-request/instance/card storage; incompatible with file-authoritative boards.
 RING_CAP = 256 * 1024          # output tail kept per pane
 SEND_TIMEOUT = 8.0             # pane.send: how long a message may take to enter the pane before it counts as undelivered (under the client's 10 s request timeout)
 INPUT_TIMEOUT = 1.0            # pane.input: keystrokes and pastes wait this long, then stay queued (typing must not block the panel)
@@ -2100,7 +2100,7 @@ class Daemon:
             contexts = runs.task_contexts(self._board())
             cards = []
             for r in self._board().execute(
-                    "SELECT id,status,title,assignee,workspace,origin_session,session_file,session_dir FROM tasks ORDER BY created_at"):
+                    "SELECT id,status,title,assignee,workspace,origin_session,session_file,session_dir FROM card_state ORDER BY created_at"):
                 context = contexts.get(r["id"])
                 project = context["workspace"] if context else r["workspace"]
                 if workspace and project != workspace:

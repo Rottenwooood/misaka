@@ -4,6 +4,7 @@ A run's limits were written once, when it was created, and nothing could change 
 started with four Sisters per node and a cluster that could take one more had to be stopped and
 started again. They are now changed in place, read where each is used, and never set below what
 the graph already holds."""
+
 import json
 from contextlib import closing
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ import pytest
 from misaka.core.platform import repo, tasks
 from misaka.core.research import runs
 from misaka.core.research.wiring import research
+from tests.factories import owner, research_run
 
 
 @pytest.fixture
@@ -21,11 +23,12 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks, "task_state_dir", lambda tid: str(tmp_path / "state" / tid))
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
         runs.init(con)
+        owner(con)
         yield con
 
 
 def _run(board, tmp_path, **limits):
-    return runs.create(board, workspace=str(tmp_path), question="How was the salt monopoly run?", limits=limits)
+    return research_run(board, workspace=str(tmp_path), question="How was the salt monopoly run?", limits=limits)
 
 
 def test_a_change_is_saved_and_read_back_where_the_run_uses_it(board, tmp_path):

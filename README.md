@@ -1,5 +1,8 @@
 <p align="center"><img src="assets/banner.jpg" alt="MISAKA — designed by Luciole Studio" width="100%"></p>
 
+> 本个人助手开发分支已采用统一的任务请求／卡片／实例状态模型，旧 board 格式不迁移。当前范围、隔离验收命令与运行环境见 [第二阶段说明](docs/personal/stage-02-state.md)。
+
+
 <h1 align="center">
   <img src="assets/logo.svg" alt="" width="96" height="96"><br>
   MISAKA

@@ -3,6 +3,7 @@ completed her card, and Last Order, between phases, edited the saved report draf
 draft's frozen digest no longer matched, the run failed at its last step with a partial report, and
 every resume failed the same way. What the workflow saved is not the file tools' to change, and a
 checkpoint changed anyway is put back from the command it was saved from."""
+
 import hashlib
 from contextlib import closing
 from pathlib import Path
@@ -12,6 +13,7 @@ import pytest
 from misaka.config import CFG
 from misaka.core.platform import tasks
 from misaka.core.research import report, runs, workflow
+from tests.factories import research_run
 
 DRAFT = "# Report\n\nThe crisis escalated in discourse first.\n"
 
@@ -21,7 +23,7 @@ def lab(tmp_path, monkeypatch):
     monkeypatch.setattr(workflow, "_bundle", lambda *a, **k: None)
     with closing(tasks.connect(CFG["db"])) as con:
         runs.init(con)
-        run = runs.create(con, workspace=str(tmp_path), question="Why did the crisis escalate?")
+        run = research_run(con, workspace=str(tmp_path), question="Why did the crisis escalate?")
         assert runs.acquire_driver(con, run["id"], "driver:test")
         run = runs.get(con, run["id"])
         yield con, run
@@ -128,7 +130,7 @@ def test_a_frozen_file_is_refused_in_any_spelling_its_file_system_takes(tmp_path
     workspace = tmp_path / unicodedata.normalize("NFD", "研究データ")
     workspace.mkdir()
     with closing(tasks.connect(CFG["db"])) as con:
-        run = runs.create(con, workspace=str(workspace), question="Why?")
+        run = research_run(con, workspace=str(workspace), question="Why?")
         runs.acquire_driver(con, run["id"], "driver:test")
         run = runs.get(con, run["id"])
         draft = report._save(con, run, "draft", DRAFT)

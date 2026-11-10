@@ -1,6 +1,7 @@
 """A node whose recorded conversation was never written opens a new one: --continue picked
 whatever else was newest in its directory, for a root started from a chat that chat's other
 conversations (0.18.10 sweep)."""
+
 import os
 from contextlib import closing
 
@@ -10,6 +11,7 @@ from misaka.config import current_config
 from misaka.core.platform import session as platform_session
 from misaka.core.platform import tasks
 from misaka.core.research import runs, window
+from tests.factories import research_run
 
 
 @pytest.mark.parametrize("recorded, written, expected", [
@@ -29,7 +31,7 @@ async def test_a_node_reopens_only_its_own_conversation(tmp_path, monkeypatch, r
     monkeypatch.setattr(platform_session, "open_session", open_session)
     with closing(tasks.connect(cfg["db"])) as con:
         runs.init(con)
-        run = runs.create(con, workspace=str(tmp_path), question="Fixture question")
+        run = research_run(con, workspace=str(tmp_path), question="Fixture question")
         own = chat / "root.jsonl"
         if written:
             own.write_text("{}\n", encoding="utf-8")

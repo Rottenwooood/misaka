@@ -1,6 +1,7 @@
 """How Last Order's plan calls are recorded (0.18.10 sweep): a full plan sent again in the same
 turn replaces the first, an append to a follow-up round keeps the cards before it, a fork sent
 twice is one fork, and a local_id given twice in one call is refused."""
+
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ import pytest
 
 from misaka.core.platform import tasks
 from misaka.core.research import commands, planner, runs
+from tests.factories import research_run
 
 ROSTER = [{"id": "10032"}, {"id": "10043"}]
 
@@ -25,7 +27,7 @@ def validate(value):
 @pytest.fixture
 def state(tmp_path):
     con = tasks.connect(str(tmp_path / "board.db"))
-    run = runs.create(con, workspace=str(tmp_path), question="fixture")
+    run = research_run(con, workspace=str(tmp_path), question="fixture")
     root = runs.nodes(con, run["id"])[0]
     assert runs.acquire_driver(con, run["id"], "driver")
     runs.prepare_runner(con, "research_branches", root["id"])

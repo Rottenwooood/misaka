@@ -3,6 +3,7 @@
 three refusals, cleared by hand in the database). A lease whose lock names this host and a
 pid that no longer exists is taken over at once; a live pid, a foreign host and a lock that
 does not name a process still wait for the TTL."""
+
 import os
 import socket
 import time
@@ -13,12 +14,13 @@ import pytest
 
 from misaka.core.platform import tasks
 from misaka.core.research import runs
+from tests.factories import research_run
 
 
 @pytest.fixture
 def run(tmp_path):
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
-        yield con, runs.create(con, workspace=str(tmp_path), question="Fixture question")
+        yield con, research_run(con, workspace=str(tmp_path), question="Fixture question")
 
 
 def _dead_pid():

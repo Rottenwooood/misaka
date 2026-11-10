@@ -4,6 +4,7 @@ Last Order that remembered none of the run's turns, and the red team's deliberat
 moved with them (2026-09-23 23:27). The window path now refuses unless the session matches or
 `--here` says the adoption is meant; the CLI path, which reopens the saved session, is
 unchanged."""
+
 import asyncio
 from contextlib import closing
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ import pytest
 from misaka.core.platform import repo, tasks
 from misaka.core.research import runs, workflow
 from misaka.core.research.wiring import research
+from tests.factories import owner, research_run
 
 
 @pytest.fixture
@@ -20,6 +22,7 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(repo, "enabled", lambda *a: False)
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
         runs.init(con)
+        owner(con)
         yield con
 
 
@@ -45,7 +48,7 @@ async def chat(board, tmp_path, monkeypatch):
         sessionManager=SimpleNamespace(sessionId="fixture", sessionFile=str(tmp_path / "other-window.jsonl")),
         ui=SimpleNamespace(notify=lambda text, kind: state.notices.append((text, kind))))
     state.command = state.part.commands[0].handler
-    run = runs.create(board, workspace=research._workspace(state.ctx), question="Fixture question")
+    run = research_run(board, workspace=research._workspace(state.ctx), question="Fixture question")
     runs.set_state(board, run["id"], status="stopped", root_session=str(tmp_path / "root-window.jsonl"))
     state.run = run
     try:

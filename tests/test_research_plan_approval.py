@@ -11,6 +11,7 @@ import pytest
 from misaka.core.platform import cards, repo, tasks
 from misaka.core.research import planner, runs, workflow
 from misaka.core.research.wiring import research
+from tests.factories import owner, research_run
 
 
 @pytest.fixture
@@ -19,6 +20,7 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks, "task_state_dir", lambda tid: str(tmp_path / "state" / tid))
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
         runs.init(con)
+        owner(con)
         yield con
 
 
@@ -32,7 +34,7 @@ def test_saved_approval_requires_a_real_boolean(value):
 @pytest.mark.parametrize("default", [False, True])
 def test_reopened_run_uses_saved_mode_or_legacy_default(board, tmp_path, saved, default):
     limits = {} if saved is None else {"plan_approval": saved}
-    run = runs.create(board, workspace=str(tmp_path), question="Approval policy", limits=limits)
+    run = research_run(board, workspace=str(tmp_path), question="Approval policy", limits=limits)
     original = run["limits_json"]
     runs.set_state(board, run["id"], status="waiting_input")
     with closing(tasks.connect(str(tmp_path / "board.db"))) as restored:
@@ -175,7 +177,7 @@ async def test_pending_stop_or_toggle_discards_selected_mode(chat, board, cancel
 @pytest.mark.parametrize("fork", [False, True])
 @pytest.mark.parametrize("phase", ["initial", "followup"])
 def test_initial_and_followup_prompts_use_saved_mode(board, tmp_path, monkeypatch, saved, fork, phase):
-    run = runs.create(board, workspace=str(tmp_path), question="Prompt policy", limits={"plan_approval": saved})
+    run = research_run(board, workspace=str(tmp_path), question="Prompt policy", limits={"plan_approval": saved})
     root = runs.nodes(board, run["id"])[0]
     node = runs.create_node(board, run["id"], question="Child", parents=[root["id"]]) if fork else root
     monkeypatch.setattr(planner, "_roster", lambda cfg: [])
@@ -205,7 +207,7 @@ class CardsSubmitted(Exception):
 @pytest.mark.parametrize("fork", [False, True])
 @pytest.mark.parametrize("round_number", [1, 2])
 async def test_driver_uses_saved_mode_for_each_node_and_round(board, tmp_path, monkeypatch, saved, fork, round_number):
-    run = runs.create(board, workspace=str(tmp_path), question="Driver policy", limits={"plan_approval": saved})
+    run = research_run(board, workspace=str(tmp_path), question="Driver policy", limits={"plan_approval": saved})
     root = runs.nodes(board, run["id"])[0]
     node = runs.create_node(board, run["id"], question="Child", parents=[root["id"]]) if fork else root
     # One card: a plan without cards is a pure branch point, which never reaches card submission.
@@ -237,7 +239,7 @@ async def test_driver_uses_saved_mode_for_each_node_and_round(board, tmp_path, m
 
 
 async def test_automatic_mode_still_stops_for_clarification(board, tmp_path, monkeypatch):
-    run = runs.create(board, workspace=str(tmp_path), question="Clarification", limits={"plan_approval": False})
+    run = research_run(board, workspace=str(tmp_path), question="Clarification", limits={"plan_approval": False})
     node = runs.nodes(board, run["id"])[0]
     plan = {"status": "clarify", "plan_markdown": "Need scope", "clarifying_questions": ["Which scope?"]}
     runs.record_action(board, run, node, "plan", plan, session_file="fixture.jsonl", tool_call_id="fixture-plan")

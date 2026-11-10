@@ -8,6 +8,7 @@ for /research resume" notice while the run is paused, nothing once it is done --
 is written into the transcript or the system prompt.
 2026-09-18 (B26): the completion notice of a research card is skipped only while its run is
 being driven; under a paused run it is news."""
+
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,7 @@ import pytest
 from misaka.core.platform import tasks
 from misaka.core.research import runs, workflow
 from misaka.core.research.wiring import research
+from tests.factories import research_run
 
 
 @pytest.fixture
@@ -25,7 +27,7 @@ def board(tmp_path):
 
 
 def _run(con, tmp_path, session="s1", status=None):
-    run = runs.create(con, workspace=str(tmp_path), question="why is the sky blue", origin_session=session)
+    run = research_run(con, workspace=str(tmp_path), question="why is the sky blue", origin_session=session)
     if status:
         runs.set_state(con, run["id"], status=status)
     return run["id"]

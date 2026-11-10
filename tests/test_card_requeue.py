@@ -5,14 +5,16 @@ refuses anything but blocked or triage, `misaka_sister` wants ready, `misaka_sis
 wants a session -- so Last Order wrote `UPDATE tasks SET status='ready'` twice, watched the card
 file put it back both times (B24), and finally wrote a script that imported the repository and
 called `tasks.reopen_task` itself. That call was the right one; it just had no door."""
+
 from types import SimpleNamespace
 
 import pytest
 
 from misaka.core.network.wiring import network
-from misaka.core.platform import cards, tasks
+from misaka.core.platform import tasks
 from misaka.core.research import runs
 from misaka.core.wiring import ToolCollector
+from tests.factories import contract_card, research_run
 
 BODY = "## deliverable\nnotes.md\n"
 
@@ -38,10 +40,10 @@ def requeue(tmp_path):
 
 
 def _card(con, tmp_path, status="stopped", title="T4 crossover"):
-    task_id = cards.create(con, str(tmp_path), title, BODY, "10032")
+    task_id = contract_card(con, str(tmp_path), title, BODY, "10032")
     if status != "ready":
         con.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
-        tasks._mirror_status(con, task_id)      # the card file is the contract, so it says so too
+
         con.commit()
     return task_id
 
@@ -101,7 +103,7 @@ async def test_a_research_card_is_left_to_the_user_and_research_resume(board, tm
     """`/research resume` is human-only by the user's rule: the run's driver owns its cards,
     and requeueing one behind the driver's back is what B13's mass-stop was repaired with."""
     task_id = _card(board, tmp_path)
-    run = runs.create(board, workspace=str(tmp_path), question="why is the sky blue")
+    run = research_run(board, workspace=str(tmp_path), question="why is the sky blue")
     node = runs.root(board, run["id"])
     runs.link_task(board, run["id"], task_id, kind="investigate", node=node)
     board.commit()

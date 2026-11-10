@@ -2,6 +2,7 @@
 ``dispatch.accept_state``) is registered as a research artifact before the partial report is
 written when the driver is interrupted, and the report lists it. The lifecycle fixture mocks
 settle away; this test puts the real one back and checks the database, not a recorder."""
+
 import hashlib
 from pathlib import Path
 
@@ -10,15 +11,16 @@ from test_research_root_lifecycle import (
 )
 
 from misaka.core.network import dispatch
-from misaka.core.platform import cards, tasks
+from misaka.core.platform import tasks
 from misaka.core.research import runs, workflow
+from tests.factories import contract_card
 
 REAL_SETTLE = workflow.settle_done_tasks       # captured before any fixture patches it
 
 
 async def test_an_interrupted_run_registers_what_the_sisters_delivered(root_run, monkeypatch):  # noqa: F811
     con, run, root, _owner, _events = root_run
-    tid = cards.create(con, run["workspace"], "fixture output", "fixture body", "fixture")
+    tid = contract_card(con, run["workspace"], "fixture output", "fixture body", "fixture")
     runs.link_task(con, run["id"], tid, kind="research", node=root, local_id="source")
     task = tasks.get(con, tid)
     evidence = Path(task["output_dir"]) / "evidence.md"

@@ -18,6 +18,7 @@ from misaka.core.tools.web_fetch import (
     create_web_fetch_tool_definition,
 )
 from misaka.core.web import bounded, negative_cache
+from tests.factories import research_run
 
 PUBLIC = "93.184.216.34"
 
@@ -591,7 +592,7 @@ async def test_saved_pages_remain_readable_and_declarations_are_not_filtered(mon
 
     con = db.connect(str(tmp_path / "board.db"))
     runs.init(con)
-    run = runs.create(con, workspace=str(workspace), question="Did shipments rise?")
+    run = research_run(con, workspace=str(workspace), question="Did shipments rise?")
     node = runs.nodes(con, run["id"])[0]
     con.execute(
         "INSERT INTO research_run_tasks (task_id,run_id,branch_id,kind,round,created_at) "

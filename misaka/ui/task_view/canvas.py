@@ -139,7 +139,7 @@ class Canvas:
                 )
                 base_y += 1
             by_id = {n["id"]: n for n in project["nodes"]}
-            if not project["groups"]:
+            if not project["requests"]:
                 self.headings.append(
                     (
                         2,
@@ -149,7 +149,7 @@ class Canvas:
                     )
                 )
                 base_y += 3
-            for index, group in enumerate(project["groups"]):
+            for index, group in enumerate(project["requests"]):
                 ranks = group["ranks"]
                 columns = {}
                 for tid in group["nodes"]:
@@ -157,20 +157,20 @@ class Canvas:
                 count_running = sum(
                     by_id[tid]["running"] is True for tid in group["nodes"]
                 )
-                all_done = all(
+                all_done = bool(group["nodes"]) and all(
                     by_id[tid]["status"] in ("done", "archived")
                     and not by_id[tid]["errors"]
                     for tid in group["nodes"]
                 )
-                state = "全部完成" if all_done else f"{count_running} 执行中（索引）"
-                if group["cycle_or_downstream"]:
-                    state += " / 依赖含环，或位于环的下游"
+                state = "尚未拆分" if not group["nodes"] else "全部完成" if all_done else f"{count_running} 执行中"
+                if group["errors"]:
+                    state += " / 计划异常"
                 self.headings.append(
                     (
                         2,
                         base_y,
-                        f"依赖组 {index + 1} / {len(group['nodes'])} 卡 / {state}",
-                        "wait" if group["cycle_or_downstream"] else "dim",
+                        f"{group['id']} · {group['title']} / LO {group['owner_id']} / v{group['revision']} / {state}",
+                        "wait" if group["errors"] else "dim",
                     )
                 )
                 start = len(self.nodes)
@@ -188,7 +188,8 @@ class Canvas:
                             for p in parents
                         )
                         self.nodes.append(node)
-                self.groups.append(start)
+                if group["nodes"]:
+                    self.groups.append(start)
                 positions = {n["id"]: n for n in self.nodes[start:]}
                 for tid in group["nodes"]:
                     for parent in by_id[tid]["needs"]:
@@ -297,27 +298,25 @@ class Canvas:
         if node["errors"]:
             return "旧快照" if node["stale"] else "读取异常"
         if node["running"]:
-            return "执行中（索引）"
-        if node["missing_needs"]:
-            return "缺少依赖"
+            return "执行中"
         if node["status"] in ("ready", "todo") and node["waiting"]:
             return "等依赖"
         return STATE.get(node["status"], node["status"])
 
     def render(self, cols, rows):
         s = Screen(cols, rows)
-        s.text(0, 0, "MISAKA / 任务画布 / 只读 / 现有卡片依赖组", "accent")
+        s.text(0, 0, "MISAKA / 任务画布 / 只读 / 任务请求与卡片依赖", "accent")
         s.text(
             0,
             1,
             "方向键/hjkl 平移 · 拖空白平移 · Tab 选卡 · n/p 换组 · a 执行中 · g 起点 · q 退出",
             "dim",
         )
-        warning = self.snapshot["runtime_error"]
+        warning = self.snapshot["state_error"]
         diagnostics = sum(
             len(p["errors"])
-            + sum(bool(n["errors"] or n["missing_needs"]) for n in p["nodes"])
-            + sum(bool(g["cycle_or_downstream"]) for g in p["groups"])
+            + sum(bool(n["errors"]) for n in p["nodes"])
+            + sum(bool(g["errors"]) for g in p["requests"])
             for p in self.snapshot["projects"]
         )
         s.text(
@@ -369,8 +368,8 @@ class Canvas:
             world.text(
                 x + 2,
                 y + 3,
-                clipped(self.state(node) + " / " + node["assignee"], 34),
-                "wait" if node["errors"] or node["missing_needs"] else "dim",
+                clipped(self.state(node) + " / " + node["instance_id"], 34),
+                "wait" if node["errors"] else "dim",
             )
         for row in range(world.rows):
             s.cells[row + 3] = world.cells[row]
@@ -384,15 +383,10 @@ class Canvas:
             else "暂无卡片",
             "accent",
         )
-        detail = "每 0.5 秒刷新 · 执行标记来自索引，非实例 active · 关闭只退出查看"
+        detail = "每 0.5 秒刷新 · 任务来自当前状态库 · 关闭只退出查看"
         if node:
             detail = (
                 "；".join(node["errors"])
-                or (
-                    "缺少依赖：" + ", ".join(node["missing_needs"])
-                    if node["missing_needs"]
-                    else ""
-                )
                 or node["block_reason"]
                 or detail
             )
@@ -400,7 +394,7 @@ class Canvas:
             0,
             rows - 1,
             detail,
-            "wait" if node and (node["errors"] or node["missing_needs"]) else "dim",
+            "wait" if node and (node["errors"]) else "dim",
         )
         return s
 

@@ -1,4 +1,5 @@
 """The model's tool filter and the Board's execution boundary agree on Research ownership."""
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -6,9 +7,10 @@ import pytest
 
 from misaka.core.network.sister_runtime import SisterRuntime
 from misaka.core.network.wiring import network
-from misaka.core.platform import cards, tasks
+from misaka.core.platform import tasks
 from misaka.core.research import runs
 from misaka.core.wiring import ToolCollector
+from tests.factories import contract_card, research_run
 
 
 @pytest.fixture
@@ -17,9 +19,9 @@ def board(tmp_path, monkeypatch):
         monkeypatch.delenv(key, raising=False)
     con = tasks.connect(str(tmp_path / "board.db"))
     monkeypatch.setattr(network, "_CON", con)
-    ordinary = cards.create(con, str(tmp_path), "Ordinary", "## deliverable\nnotes.md\n", "10032")
-    research = cards.create(con, str(tmp_path), "Research", "## deliverable\nnotes.md\n", "10033")
-    run = runs.create(con, workspace=str(tmp_path), question="Fixture research")
+    ordinary = contract_card(con, str(tmp_path), "Ordinary", "## deliverable\nnotes.md\n", "10032")
+    research = contract_card(con, str(tmp_path), "Research", "## deliverable\nnotes.md\n", "10033")
+    run = research_run(con, workspace=str(tmp_path), question="Fixture research")
     node = runs.root(con, run["id"])
     runs.link_task(con, run["id"], research, kind="investigate", node=node)
     con.commit()

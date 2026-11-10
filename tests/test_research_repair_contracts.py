@@ -25,13 +25,14 @@ from misaka.ai.types import (
 from misaka.ai.utils.json_parse import StreamingArgs
 from misaka.core.platform import tasks
 from misaka.core.research import bundle, commands, runs, workflow
+from tests.factories import execution_card, research_run
 
 
 @pytest.fixture
 def state(tmp_path, monkeypatch):
     monkeypatch.setattr(bundle.corpus, "docs", lambda **k: [])
     con = tasks.connect(str(tmp_path / "board.db"))
-    run = runs.create(con, workspace=str(tmp_path), question="fixture")
+    run = research_run(con, workspace=str(tmp_path), question="fixture")
     try:
         yield con, run, runs.nodes(con, run["id"])[0]
     finally:
@@ -1038,7 +1039,7 @@ def test_a_failed_node_is_retried_with_its_failed_cards_and_the_loop_is_capped(s
     end and the run to be resumed. The retry does what a resume does for that node alone."""
     con, run, root = state
     node = runs.create_node(con, run["id"], question="Q", parents=[root["id"]])
-    tid = tasks.create_task(con, "Card", "## deliverable\nx.md\n", "10032", workspace=run["workspace"],
+    tid = execution_card(con, "Card", "## deliverable\nx.md\n", "10032", workspace=run["workspace"],
                             output_dir=str(tmp_path / "out"))
     runs.link_task(con, run["id"], tid, kind="research", node=node)
     with pytest.raises(ValueError, match="not failed"):

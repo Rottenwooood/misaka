@@ -4,6 +4,7 @@ change stayed declared under the old digests; the run's settle then saw bytes th
 the declaration (2026-09-24: 18 changed paths on 6 cards, a whole run failed). The declaration
 now follows the work: at the end of any further clean turn the runtime rebuilds the submission
 from the output folder and records it as a newer ``submitted`` row, without a model turn."""
+
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import pytest
 
 from misaka.core.network import todo
 from misaka.core.platform import tasks
+from tests.factories import contract_card
 
 BODY = ("## research question\nWhy?\n\n## deliverable\nreport.md\n"
         "Write it under the deliverable location the card names.\n\n## boundaries\nnone\n")
@@ -38,12 +40,11 @@ class _Session:
 @pytest.fixture
 def card(tmp_path, monkeypatch, request):
     from misaka.core.network import worker
-    from misaka.core.platform import cards
     con = tasks.connect(str(tmp_path / "board.db"))
     request.addfinalizer(con.close)
     out = tmp_path / "nodes" / "cards" / "t1"
     out.mkdir(parents=True)
-    tid = cards.create(con, str(tmp_path), "T1 report", BODY, "10032")
+    tid = contract_card(con, str(tmp_path), "T1 report", BODY, "10032")
     session_file = str(tmp_path / "sister.jsonl")
     con.execute("UPDATE tasks SET status='running', claim_lock='lock1', claim_expires=?, output_dir=?, "
                 "worker_pid=?, session_file=? WHERE id=?",

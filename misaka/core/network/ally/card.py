@@ -531,13 +531,13 @@ def launch(task_id, say=None):
         if row is None:
             sys.exit(f"Card not found: {task_id}")
         task = {**dict(row), "_handoffs": worker.card_handoffs(con, row), **worker.card_extras(con, row)}
+        task["_attachments"] = card_files.attachment_list(con, db.workspace_for(row), task_id)
     generation, claim_lock = worker.claim_env(task_id)
     if generation is None or task["claim_lock"] != claim_lock or int(task["generation"]) != generation:
         sys.exit(f"Card {task_id} is not claimed by this pane; the daemon owns the claim.")
     workspace = db.workspace_for(task)
     if not os.path.isdir(workspace):
         sys.exit(f"Card {task_id}: its folder {workspace} no longer exists.")
-    task["_attachments"] = card_files.attachment_list(workspace, task_id, workspace=workspace)
     os.chdir(workspace)
     from misaka.utils import loop_watchdog
     loop_watchdog.configure(f"card-{task_id}", exit_on_stall=True)

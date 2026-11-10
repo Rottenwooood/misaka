@@ -1,5 +1,6 @@
 """Git is the user's: nothing in MISAKA commits on its own, and a commit happens only when the user
 asks -- ``/commit`` or ``project_commit`` -- and confirms the files on screen."""
+
 import dataclasses
 import subprocess
 from contextlib import closing
@@ -10,6 +11,7 @@ import pytest
 from misaka.core.network import dispatch
 from misaka.core.platform import cards, project_commit, tasks
 from misaka.core.wiring import SessionSpec
+from tests.factories import contract_card
 
 
 def _git(cwd, *args):
@@ -100,24 +102,25 @@ def test_only_the_user_s_own_windows_get_the_commit_tool(monkeypatch, tmp_path):
 def test_cards_and_their_acceptance_never_commit(project):
     with closing(tasks.connect(str(project / "board.db"))) as con:
         cards.init_project(str(project), draft_brief=False, git=False)
-        tid = cards.create(con, str(project), "A card", "## deliverable\nout.md\n", "10032")
+        tid = contract_card(con, str(project), "A card", "## deliverable\nout.md\n", "10032")
         (project / "out.md").write_text("result\n", encoding="utf-8")
         con.execute("UPDATE tasks SET status='running', claim_lock='lock', claim_expires=9999999999 WHERE id=?", (tid,))
         row = tasks.get(con, tid)
         assert dispatch.accept(con, row, {"summary": "done", "artifacts": ["out.md"]}, generation=1, claim_lock="lock")
         assert tasks.get(con, tid)["status"] == "done"
-        ok, message = cards.remove(con, str(project), tid)
-        assert ok and "never committed" in message
+        ok, _message = cards.remove(con, str(project), tid)
+        assert ok and tasks.get(con,tid) is None
     assert _commits(project) == ["The User|start"]
 
 
 def test_a_committed_card_s_deletion_is_left_for_the_user(project):
     with closing(tasks.connect(str(project / "board.db"))) as con:
-        tid = cards.create(con, str(project), "A card", "## deliverable\nout.md\n", "10032")
+        tid = contract_card(con, str(project), "A card", "## deliverable\nout.md\n", "10032")
+        cards.export(con,tid)
         _git(project, "add", "cards")
         _git(project, "commit", "-q", "-m", "the user's commit")
-        ok, message = cards.remove(con, str(project), tid)
-    assert ok and "left uncommitted for you to commit" in message
+        ok, _message = cards.remove(con, str(project), tid)
+    assert ok and not (project / "cards" / f"{tid}.md").exists()
     assert _commits(project)[0] == "The User|the user's commit"
     assert f"cards/{tid}.md" in _git(project, "status", "--porcelain")
 

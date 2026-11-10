@@ -1,6 +1,7 @@
 """A panel card pane that sits idle is the daemon's while the daemon lives: any reconcile pass used
 to read its `net:` claim as no live claimer, take the idle pane for wedged, and kill its group --
 a person chatting in a card window who stepped away for an hour lost it (0.18.10 sweep)."""
+
 import os
 import secrets
 import socket
@@ -11,13 +12,14 @@ import time
 import pytest
 
 from misaka.core.network import dispatch
-from misaka.core.platform import cards, processes, tasks
+from misaka.core.platform import processes, tasks
+from tests.factories import contract_card
 
 
 @pytest.mark.skipif(os.name == "nt", reason="a pane leads its own process group on POSIX")
 def test_an_idle_panel_card_is_left_to_its_live_daemon(tmp_path):
     con = tasks.connect(str(tmp_path / "board.db"))
-    tid = cards.create(con, str(tmp_path), "T", "body", "10032")
+    tid = contract_card(con, str(tmp_path), "T", "body", "10032")
     lock = f"net:{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"     # this process is the daemon
     assert tasks.claim(con, tid, lock, generation=1, pid=os.getpid())
     pane = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)

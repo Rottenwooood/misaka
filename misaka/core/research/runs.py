@@ -649,7 +649,9 @@ def run_path(run, name):
     return os.path.join("final", f"{run['id']}-{_artifact_name(name)}")
 
 
-def create(con, *, workspace, question, limits=None, token_start=0, origin_session=None):
+def create(con, *, workspace, question, limits=None, token_start=0, origin_session=None, owner_id=None):
+    from misaka.core.platform import work
+    owner = work.coordinator(con, owner_id)
     workspace = os.path.realpath(os.path.expanduser(str(workspace or "")))
     if not os.path.isdir(workspace):
         raise ValueError(f"A research run needs an existing project folder: {workspace}")
@@ -664,6 +666,8 @@ def create(con, *, workspace, question, limits=None, token_start=0, origin_sessi
     # finalize as "every node closed", handing back a final report with no research behind it.
     # An interrupted create must leave no row at all.
     with task_store.write_txn(con):
+        work.apply(con,[{"op":"request.create","id":run_id,"owner_id":owner['id'],
+                         "workspace":workspace,"title":question,"body":question}])
         con.execute(
             "INSERT INTO research_runs "
             "(id,workspace,question,phase,status,limits_json,token_start,origin_session,created_at,updated_at) "
@@ -956,16 +960,7 @@ def link_task(con, run_id, task_id, *, kind, node, local_id=None, dependencies=(
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     con.execute("UPDATE tasks SET output_dir=? WHERE id=?", (str(output_dir), task_id))
-    # ``cards.create(after_row=...)`` calls this before the child card file exists;
-    # create publishes the complete needs list in its first file. Direct callers link
-    # already-created cards here as before.
-    task = task_store.get(con, task_id)
-    if task is not None:
-        from misaka.core.platform import cards as card_files
-        card_exists = os.path.isfile(card_files.card_path(task["workspace"], task_id))
-    else:
-        card_exists = False
-    if card_exists:
+    if task_store.get(con,task_id) is not None:
         parents = []
         for dependency in dependencies:
             parent = con.execute(
@@ -985,7 +980,7 @@ def link_task(con, run_id, task_id, *, kind, node, local_id=None, dependencies=(
 def tasks(con, run_id, *, kind=None, node_id=None, round=None):
     q, args = (
         ("SELECT t.*,rt.branch_id,rt.kind AS research_kind,rt.round,rt.local_id,rt.depends_json "
-         "FROM research_run_tasks rt JOIN tasks t ON t.id=rt.task_id WHERE rt.run_id=?"),
+         "FROM research_run_tasks rt JOIN card_state t ON t.id=rt.task_id WHERE rt.run_id=?"),
         [run_id],
     )
     if kind:

@@ -237,7 +237,7 @@ def run_task(con, t, cfg, *, say=None):
     if say is not None:
         task["_say"] = say
     from misaka.core.platform import cards as card_files
-    task["_attachments"] = card_files.attachment_list(run_dir, t["id"], workspace=workspace)
+    task["_attachments"] = card_files.attachment_list(con, run_dir, t["id"])
     task["_handoffs"] = worker.card_handoffs(con, t)
     task.update(worker.card_extras(con, t, cfg))
     bud = budget.status(con, cfg.get("token_cap"), task_id=t["id"])

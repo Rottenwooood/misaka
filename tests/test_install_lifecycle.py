@@ -18,6 +18,7 @@ import pytest
 
 from misaka.cli import backup, uninstall, update
 from misaka.config import home
+from tests.factories import research_run
 
 
 @pytest.fixture
@@ -336,8 +337,8 @@ def test_a_run_whose_driver_died_does_not_hold_up_an_update(tmp_path, monkeypatc
     monkeypatch.setattr(repo, "enabled", lambda *a, **k: False)
     with closing(tasks.connect(str(home.path("db")))) as con:
         runs.init(con)
-        live = runs.create(con, workspace=str(tmp_path), question="Live")
-        dead = runs.create(con, workspace=str(tmp_path), question="Dead")
+        live = research_run(con, workspace=str(tmp_path), question="Live")
+        dead = research_run(con, workspace=str(tmp_path), question="Dead")
         con.execute("UPDATE research_runs SET driver_lock='d1', driver_expires=? WHERE id=?",
                     (int(time.time()) + 600, live["id"]))
         con.execute("UPDATE research_runs SET driver_lock='d2', driver_expires=? WHERE id=?",

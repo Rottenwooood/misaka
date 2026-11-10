@@ -84,7 +84,7 @@ def card_counts(sid, db_path=None):
     con = board_db.connect(path)
     try:
         rows = con.execute(
-            "SELECT status, COUNT(*) FROM tasks WHERE assignee=? OR reviewer=? GROUP BY status",
+            "SELECT status, COUNT(*) FROM card_state WHERE assignee=? OR reviewer=? GROUP BY status",
             (sid, sid),
         ).fetchall()
         return {r[0]: r[1] for r in rows}

@@ -9,6 +9,7 @@ several the message is refused and they are listed.
 
 Nothing here is mocked but the process start of a wake-up: the catalog, the board, the mailbox and
 the liveness check are the real ones, in the test's own home."""
+
 import asyncio
 import json
 import os
@@ -24,7 +25,8 @@ import pytest
 from misaka.config import CFG, home
 from misaka.core import session_catalog
 from misaka.core.network import messages
-from misaka.core.platform import cards, processes, tasks
+from misaka.core.platform import processes, tasks
+from tests.factories import contract_card, research_run
 
 BODY = "## deliverable\nnotes.md\n"
 SPACE_T1 = "w1111aaaa"      # the research run's space
@@ -58,7 +60,7 @@ def world(tmp_path, monkeypatch):
 
 
 def _running(world, assignee="10032", generation=1, title="T card"):
-    task_id = cards.create(world.board, world.workspace, title, BODY, assignee)
+    task_id = contract_card(world.board, world.workspace, title, BODY, assignee)
     world.board.execute("UPDATE tasks SET status='running', generation=? WHERE id=?", (generation, task_id))
     world.board.commit()
     return task_id
@@ -114,7 +116,7 @@ def test_your_own_card_and_session_are_refused(world):
 
 
 def _finished(world, assignee="10032", generation=2, title="T finished"):
-    task_id = cards.create(world.board, world.workspace, title, BODY, assignee)
+    task_id = contract_card(world.board, world.workspace, title, BODY, assignee)
     world.board.execute("UPDATE tasks SET status='done', generation=? WHERE id=?", (generation, task_id))
     world.board.commit()
     return task_id
@@ -123,7 +125,7 @@ def _finished(world, assignee="10032", generation=2, title="T finished"):
 def test_a_card_that_has_not_started_gets_its_mail_pinned_for_its_first_attempt(world):
     """2026-10-01: C1 wrote to C2 while C2 waited on C1; the note has to wait for C2, not go to a
     contact session outside the run (B16 is how the daemon mails a first attempt)."""
-    unstarted = cards.create(world.board, world.workspace, "T unstarted", BODY, "10032")
+    unstarted = contract_card(world.board, world.workspace, "T unstarted", BODY, "10032")
     target = _resolve(unstarted, sender="10036")
     assert target["not_started"] and target["to_task"] == unstarted and not target.get("wake_card")
 
@@ -326,7 +328,7 @@ def test_the_mailbox_carries_a_version_and_a_newer_one_asks_for_an_update(tmp_pa
     raw.execute("UPDATE schema_migrations SET version=? WHERE component='messages'", (messages.MESSAGES_SCHEMA_VERSION + 1,))
     raw.commit()
     raw.close()
-    with pytest.raises(RuntimeError, match="newer MISAKA.*misaka update"):
+    with pytest.raises(RuntimeError, match="incompatible messages format"):
         messages.connect(str(path))
 
 
@@ -627,7 +629,7 @@ def test_the_contact_delivery_hands_her_answer_back(world, monkeypatch):
 def _run(world, *, origin_session=None):
     from misaka.core.research import runs
     runs.init(world.board)
-    run = runs.create(world.board, workspace=world.workspace, question="why is the sky blue", origin_session=origin_session)
+    run = research_run(world.board, workspace=world.workspace, question="why is the sky blue", origin_session=origin_session)
     return run["id"]
 
 
@@ -643,7 +645,7 @@ def test_a_name_inside_a_research_run_means_that_role_s_card_in_the_run(world):
     not see the run, did C2's job beside her, and answered C1 in her name."""
     run = _run(world)
     c1 = _finished(world, assignee="10037", title="T C1")
-    c2 = cards.create(world.board, world.workspace, "T C2", BODY, "10036")
+    c2 = contract_card(world.board, world.workspace, "T C2", BODY, "10036")
     _link(world, run, c1)
     _link(world, run, c2)
     target = _resolve("10036", sender="10037", sender_task=c1)

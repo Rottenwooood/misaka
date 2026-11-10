@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import secrets
-import shutil
 import sqlite3
 import threading
 import time
@@ -38,12 +37,15 @@ logger = logging.getLogger(__name__)
 # the filesystem, not of the connection, so it is worth saying exactly once.
 _WARNED_ROLLBACK_JOURNAL = False
 
-SCHEMA = """
+from misaka.core.platform.work import SCHEMA as WORK_SCHEMA
+
+SCHEMA = WORK_SCHEMA + """
 CREATE TABLE IF NOT EXISTS tasks (
  id TEXT PRIMARY KEY,
+ request_id TEXT NOT NULL REFERENCES work_requests(id),
+ instance_id TEXT NOT NULL REFERENCES instances(id),
  title TEXT NOT NULL,
  body TEXT,
- assignee TEXT NOT NULL,
  reviewer TEXT,
  model TEXT,
  status TEXT NOT NULL DEFAULT 'ready',
@@ -78,6 +80,20 @@ CREATE TABLE IF NOT EXISTS tasks (
  created_at INTEGER NOT NULL,
  started_at INTEGER,
  completed_at INTEGER
+);
+CREATE VIEW IF NOT EXISTS card_state AS
+ SELECT t.*, i.template_id AS assignee FROM tasks t JOIN instances i ON i.id=t.instance_id;
+CREATE TABLE IF NOT EXISTS task_dependencies (
+ child_id TEXT NOT NULL REFERENCES tasks(id) DEFERRABLE INITIALLY DEFERRED,
+ parent_id TEXT NOT NULL REFERENCES tasks(id) DEFERRABLE INITIALLY DEFERRED,
+ PRIMARY KEY(child_id,parent_id),
+ CHECK(child_id != parent_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS instance_one_running ON tasks(instance_id) WHERE status='running';
+CREATE TABLE IF NOT EXISTS card_urls (
+ task_id TEXT NOT NULL REFERENCES tasks(id),
+ url TEXT NOT NULL,
+ PRIMARY KEY(task_id,url)
 );
 CREATE TABLE IF NOT EXISTS events (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,7 +167,7 @@ CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, kind, id);
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
 """
-TASK_SCHEMA_VERSION = 9
+TASK_SCHEMA_VERSION = 10
 MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 # One failure model for every way an attempt can end badly -- a crash, a timeout, a provider
 # error, a turn that ended without settling the card. Each counts against the same limit and the
@@ -315,12 +331,10 @@ def _serialized(operation):
 
 
 def require_schema(con, component, version, *, populated):
-    """A stored component is current, fresh, newer, or older. Returns True when fresh.
+    """Accept exactly the current schema or initialize a fresh component.
 
-    Compatibility starts with 0.18.0, the first release; a later format change ships its
-    migration with it. Until one does, any other marker is refused and the data is left exactly
-    as it was: a newer build's, which this one must not reshape, or a pre-release build's, which
-    no release reads.
+    Other formats are refused before their content is changed. This branch has
+    no migration or old-format interpretation path.
     """
     recorded = con.execute(
         "SELECT MAX(version) FROM schema_migrations WHERE component=?", (component,)
@@ -334,15 +348,10 @@ def require_schema(con, component, version, *, populated):
         )
         return True
     where = con.execute("PRAGMA database_list").fetchone()[2] or "this database"
-    if recorded is not None and recorded > version:
-        raise RuntimeError(
-            f"{where}: its {component} tables were written by a newer MISAKA (v{recorded}; this build "
-            f"reads v{version}). Update MISAKA (`misaka update`); an older build cannot read them."
-        )
     written = f"v{recorded}" if recorded is not None else "no version marker"
     raise RuntimeError(
-        f"{where}: its {component} tables were written by a pre-release MISAKA ({written}; this build "
-        f"reads v{version}), and pre-release data is not migrated. Move the file aside and MISAKA starts a new one."
+        f"{where}: incompatible {component} format {written}; expected v{version}. "
+        "Use a separate MISAKA_HOME. This build does not migrate stored data."
     )
 
 
@@ -358,6 +367,10 @@ def connect(path: str) -> sqlite3.Connection:
     )
     try:
         con.row_factory = Row
+        # Refuse another board format before journal mode or schema DDL can touch it.
+        if con.execute("SELECT 1 FROM sqlite_master WHERE name='tasks' AND type='table'").fetchone():
+            require_schema(con, "tasks", TASK_SCHEMA_VERSION, populated=True)
+        con.execute("PRAGMA foreign_keys=ON")
         # journal_mode=WAL is a request, not a promise: a filesystem without the shared-memory and
         # locking primitives WAL needs (NFS, SMB, some container overlays) leaves SQLite in
         # rollback-journal mode, and the pragma answers with the mode it kept. Read that row back --
@@ -369,8 +382,7 @@ def connect(path: str) -> sqlite3.Connection:
             # board is written a statement at a time (one UPDATE per reconciled card, one row per
             # event). Under WAL, NORMAL cannot corrupt the database; it risks only the last commits
             # before a power cut, and every durable decision here is a lease or a CAS that re-runs
-            # when it is not observed: an un-fsynced claim is simply claimed again. The card file,
-            # not this index, is the contract.
+            # when it is not observed: an un-fsynced claim is simply claimed again. The canonical database is the contract.
             con.execute("PRAGMA synchronous=NORMAL")
         else:
             # That whole tolerance argument was made *for* WAL. In rollback-journal mode NORMAL
@@ -392,7 +404,7 @@ def connect(path: str) -> sqlite3.Connection:
         con.executescript(SCHEMA)
         from misaka.core.platform import notifications
         require_schema(con, "tasks", TASK_SCHEMA_VERSION,
-                       populated=con.execute("SELECT EXISTS(SELECT 1 FROM tasks)").fetchone()[0])
+                       populated=con.execute("SELECT EXISTS(SELECT 1 FROM card_state)").fetchone()[0])
         notifications.init(con)
     except BaseException:
         con.close()
@@ -414,53 +426,41 @@ def workspace_for(task):
 
 
 def _card_dispatchable(con, task_id, *, require_parents=True):
-    """One card's file-side gate, checked per claim; the project-wide pass is per tick."""
-    row = con.execute("SELECT workspace FROM tasks WHERE id=?", (task_id,)).fetchone()
+    row = get(con, task_id)
     if row is None:
         return False
-    from misaka.core.platform import cards
-    return cards.dispatchable(con, row["workspace"], task_id, require_parents=require_parents)
+    if con.execute("SELECT 1 FROM card_state WHERE instance_id=? AND id!=? AND status='running'", (row["instance_id"],task_id)).fetchone():
+        return False
+    if not require_parents:
+        return True
+    return dependency_state(con, task_id)[0] == "ready"
 
 
 @_serialized
-def create_task(con, title, body="", assignee="", model=None, priority=0,
-                reviewer=None, workspace=None, output_dir=None,
-                origin_session=None):
-    """Insert a card, record its ``created`` event, and return the new id.
-
-    ``workspace`` is the project folder the card belongs to; there is no default.
-    ``origin_session`` is the Last Order conversation that created it, so that
-    conversation can bring the right Sisters back when it is resumed.
-    """
+def create_task(con, title, body="", *, request_id, instance_id, model=None, priority=0,
+                reviewer=None, workspace=None, output_dir=None, origin_session=None, task_id=None):
+    """Create the canonical card row. Identity and ownership are never inferred from files."""
+    from misaka.core.platform import work
+    owner = work.request(con, request_id)
+    executor = work.instance(con, instance_id)
+    if executor["role"] != "sister" or executor["retired"]:
+        raise ValueError("A card needs a non-retired Sister instance")
+    assignee = executor["template_id"]  # engine role routing; instance_id is execution identity
     reviewer = str(reviewer or "").strip() or None
     if reviewer == assignee:
         raise ValueError("The reviewer must be different from the assignee.")
-    if not workspace:
-        raise ValueError("A task card needs a workspace folder.")
-    workspace = canonical_workspace(workspace)
+    workspace = canonical_workspace(workspace or owner["workspace"])
     output_dir = canonical_workspace(output_dir) if output_dir else None
-    # Three bytes of id keep card names short enough to say aloud; a board of a few thousand
-    # cards will see the odd collision, which costs a fresh draw, never a failed create.
-    for draw in range(3):
-        tid = "t_" + secrets.token_hex(3)
-        try:
-            con.execute(
-                "INSERT INTO tasks (id,title,body,assignee,reviewer,model,priority,"
-                "workspace,output_dir,origin_session,created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (tid, title, body, assignee, reviewer,
-                 model, priority, workspace, output_dir, origin_session or None,
-                 int(time.time())),
-            )
-        except sqlite3.IntegrityError:
-            if draw == 2:
-                raise
-            continue
-        break
-    add_event(con, tid, "created", {"title": title, "assignee": assignee,
-                                    "reviewer": reviewer,
-                                    "workspace": workspace})
+    tid = task_id or "t_" + secrets.token_hex(3)
+    con.execute(
+        "INSERT INTO tasks(id,request_id,instance_id,title,body,reviewer,model,priority,"
+        "workspace,output_dir,origin_session,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (tid,request_id,instance_id,title,body,reviewer,model,priority,workspace,output_dir,
+         origin_session or None,int(time.time())),
+    )
+    add_event(con, tid, "created", {"title":title,"request_id":request_id,"instance_id":instance_id})
     return tid
+
 
 
 @_serialized
@@ -490,7 +490,7 @@ def add_event(
         payload = redact(payload)
     now = int(time.time())
     if run_id is None:
-        row = con.execute("SELECT current_run_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+        row = con.execute("SELECT current_run_id FROM card_state WHERE id=?", (task_id,)).fetchone()
         run_id = row[0] if row else None
     if claim_lock is not None:
         if generation is None:
@@ -498,7 +498,7 @@ def add_event(
         cur = con.execute(
             "INSERT INTO events (task_id, kind, payload, generation, run_id, created_at) "
             "SELECT ?,?,?,?,?,? WHERE EXISTS "
-            "(SELECT 1 FROM tasks WHERE id=? AND generation=? "
+            "(SELECT 1 FROM card_state WHERE id=? AND generation=? "
             "AND status='running' AND claim_lock=? AND claim_expires>=?)",
             (
                 task_id,
@@ -516,14 +516,14 @@ def add_event(
     elif generation is None:
         cur = con.execute(
             "INSERT INTO events (task_id, kind, payload, generation, run_id, created_at) "
-            "SELECT ?,?,?,generation,?,? FROM tasks WHERE id=?",
+            "SELECT ?,?,?,generation,?,? FROM card_state WHERE id=?",
             (task_id, kind, payload, run_id, now, task_id),
         )
     else:
         cur = con.execute(
             "INSERT INTO events (task_id, kind, payload, generation, run_id, created_at) "
             "SELECT ?,?,?,?,?,? WHERE EXISTS "
-            "(SELECT 1 FROM tasks WHERE id=? AND generation=?)",
+            "(SELECT 1 FROM card_state WHERE id=? AND generation=?)",
             (task_id, kind, payload, generation, run_id, now, task_id, generation),
         )
     return cur.rowcount == 1
@@ -589,7 +589,7 @@ write_txn = _write_txn     # callers outside this module that must make several 
 def _start_run(
     con, task_id, generation, phase, claim_lock, pid=None, identity=None, assignee=None
 ):
-    row = con.execute("SELECT assignee,workspace,session_file FROM tasks WHERE id=?", (task_id,)).fetchone()
+    row = con.execute("SELECT assignee,workspace,session_file FROM card_state WHERE id=?", (task_id,)).fetchone()
     if row is None:
         raise ValueError(f"Card not found: {task_id}")
     attempt = int(con.execute(
@@ -635,7 +635,7 @@ def _finish_current_run(
         "UPDATE task_runs SET status=?,completed_at=?,exit_code=COALESCE(?,exit_code),"
         "failure_kind=COALESCE(?,failure_kind),"
         "failure_fingerprint=COALESCE(?,failure_fingerprint),summary=COALESCE(?,summary) "
-        "WHERE id=(SELECT current_run_id FROM tasks WHERE id=?) AND status='running'",
+        "WHERE id=(SELECT current_run_id FROM card_state WHERE id=?) AND status='running'",
         (status, now, exit_code, failure_kind, failure_fingerprint, redact(summary), task_id),
     )
 
@@ -672,11 +672,11 @@ def claim(
     assignee_cap=None,
 ) -> bool:
     now = int(time.time())
-    if not _card_dispatchable(con, task_id):
-        return False
     with _write_txn(con):
+        if not _card_dispatchable(con, task_id):
+            return False
         row = con.execute(
-            "SELECT generation,assignee,next_attempt_at FROM tasks WHERE id=?", (task_id,)
+            "SELECT generation,assignee,next_attempt_at FROM card_state WHERE id=?", (task_id,)
         ).fetchone()
         if row is None or (generation is not None and int(row["generation"]) != int(generation)):
             return False
@@ -712,92 +712,44 @@ def claim(
 
 @_serialized
 def get(con, task_id):
-    return con.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-
-
-@_serialized
-def insert_index_row(con, fields, body, *, workspace):
-    """Restore one index row from a card file (misaka.core.platform.cards.rebuild). The file is
-    the truth; this only re-derives the index and never overwrites an existing row."""
-    cur = con.execute(
-        "INSERT OR IGNORE INTO tasks (id,title,body,assignee,reviewer,model,"
-        "priority,workspace,origin_session,status,generation,created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-        (str(fields.get("id")), str(fields.get("title") or ""), body,
-         str(fields.get("assignee") or ""), fields.get("reviewer"),
-         fields.get("model"), int(fields.get("priority") or 0),
-         canonical_workspace(workspace),
-         fields.get("origin_session"), str(fields.get("status") or "ready"),
-         max(1, int(fields.get("generation") or 1)),
-         int(time.time())),
-    )
-    return cur.rowcount == 1
+    return con.execute("SELECT * FROM card_state WHERE id=?", (task_id,)).fetchone()
 
 
 @_serialized
 def delete_task(con, task_id, *, allow_active=False):
     """Delete a card and everything attached to it; active cards are refused unless ``allow_active``."""
-    row = con.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
-    if row is None:
-        return False, f"Card not found: {task_id}"
-    if not allow_active and row["status"] in ("running", "review"):
-        return False, f"Card {task_id} is {row['status']}; stop it before deletion."
-    con.execute("DELETE FROM budget_reservations WHERE task_id=?", (task_id,))
-    con.execute("DELETE FROM events WHERE task_id=?", (task_id,))
-    con.execute("DELETE FROM todos WHERE task_id=?", (task_id,))
-    con.execute("DELETE FROM task_runs WHERE task_id=?", (task_id,))
-    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='research_run_tasks'").fetchone():
-        con.execute("DELETE FROM research_run_tasks WHERE task_id=?", (task_id,))   # a link without its card is a trap for resume
-    from misaka.core.platform import cards
-    skipped = []
-    for child in _children_of(con, task_id):
-        # One child's accident is that child's alone. The handler lives inside the iteration on
-        # purpose: hoisted around the loop, a single casualty (a card file deleted concurrently
-        # between _children_of's walk and this rewrite) aborted the whole loop, and every
-        # surviving sibling kept a needs entry pointing at the card being deleted -- held at
-        # todo forever, waiting on a parent that no longer exists.
-        try:
-            remaining = [p for p in parent_ids(con, child, strict=True) if p != task_id]
-        except UnreadableCard as error:
-            skipped.append((child, error.reason))   # an empty read here would rewrite needs=None,
-            continue                                # dropping the child's *other* dependencies;
-                                                    # leave the file for its owner
-        child_row = get(con, child)
-        if child_row is None or not child_row["workspace"]:
-            skipped.append((child, "no index row"))     # a card file with no row to name its project
-            continue
-        try:
-            cards.set_fields(child_row["workspace"], child, needs=remaining or None)
-            promote_task(con, child)        # mirrors the child's file too, so it races the same way
-        except OSError as error:
-            skipped.append((child, str(error)))
-    for child, reason in skipped:
-        # On the *child*, which survives this deletion -- the parent's own events go with it.
-        add_event(con, child, "dependency_rewrite_skipped",
-                  {"parent_id": task_id, "reason": reason})
-    con.execute(
-        "DELETE FROM notification_events WHERE resource_type='task' AND resource_id=?",
-        (task_id,),
-    )
-    con.execute(
-        "DELETE FROM notification_subscriptions WHERE resource_type='task' AND resource_id=?",
-        (task_id,),
-    )
-    con.execute("DELETE FROM tasks WHERE id=?", (task_id,))
-    shutil.rmtree(task_state_dir(task_id), ignore_errors=True)
-    # Nothing here touches the card *file*; only cards.remove does, so only it says anything
-    # about the file.
-    message = (f"Card {task_id} and its runs, dependencies, events, budget, and to-do items "
-               "were deleted.")
-    if skipped:
-        message += (" These cards still name it in needs and could not be rewritten: "
-                    + "; ".join(f"{child} ({reason})" for child, reason in skipped) + ".")
-    return True, message
+    with _write_txn(con):
+        row = con.execute("SELECT status,request_id FROM card_state WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            return False, f"Card not found: {task_id}"
+        if not allow_active and row["status"] in ("running", "review"):
+            return False, f"Card {task_id} is {row['status']}; stop it before deletion."
+        if _children_of(con, task_id):
+            raise ValueError("Card is still referenced; edit the plan before deleting it")
+        con.execute("DELETE FROM card_urls WHERE task_id=?", (task_id,))
+        con.execute("DELETE FROM budget_reservations WHERE task_id=?", (task_id,))
+        con.execute("DELETE FROM events WHERE task_id=?", (task_id,))
+        con.execute("DELETE FROM todos WHERE task_id=?", (task_id,))
+        con.execute("DELETE FROM task_runs WHERE task_id=?", (task_id,))
+        if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='research_run_tasks'").fetchone():
+            con.execute("DELETE FROM research_run_tasks WHERE task_id=?", (task_id,))   # a link without its card is a trap for resume
+        con.execute("DELETE FROM task_dependencies WHERE child_id=?", (task_id,))
+        con.execute(
+            "DELETE FROM notification_events WHERE resource_type='task' AND resource_id=?",
+            (task_id,),
+        )
+        con.execute(
+            "DELETE FROM notification_subscriptions WHERE resource_type='task' AND resource_id=?",
+            (task_id,),
+        )
+        con.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+        con.execute("UPDATE work_requests SET revision=revision+1 WHERE id=?", (row["request_id"],))
+        return True, f"Card {task_id} and its runtime records were deleted."
 
 
 @_serialized
 def by_status(con, status, *, workspace=None):
-    sql = "SELECT * FROM tasks WHERE status=?"
+    sql = "SELECT * FROM card_state WHERE status=?"
     params = [status]
     if workspace is not None:
         sql += " AND workspace=?"
@@ -810,22 +762,18 @@ def fair_ready(con, *, limit=None, lane="workers", advance=True, now=None, works
     """Return runnable cards round-robin across assignees, keeping priority order within each assignee."""
     now = int(time.time()) if now is None else int(now)
     workspace = canonical_workspace(workspace) if workspace is not None else None
-    from misaka.core.platform import cards
-    workspaces = ([workspace] if workspace is not None else
-                  [row[0] for row in con.execute("SELECT DISTINCT workspace FROM tasks")])
-    valid = set().union(*(cards.reconcile(con, item) for item in workspaces if item))
     where = ""
     params = [now]
     if workspace is not None:
         where = "AND workspace=? "
         params.append(workspace)
     rows = [row for row in con.execute(
-        "SELECT * FROM tasks WHERE status='ready' "
+        "SELECT * FROM card_state WHERE status='ready' "
         "AND (next_attempt_at IS NULL OR next_attempt_at<=?) "
         + where +
         "ORDER BY assignee,priority DESC,created_at,id",
         params,
-    ).fetchall() if row["id"] in valid]
+    ).fetchall() if _card_dispatchable(con, row["id"])]
     queues = {}
     for row in rows:
         queues.setdefault(row["assignee"], []).append(row)
@@ -866,20 +814,21 @@ def link_dependencies(con, parents, child_id) -> bool:
         parents = list(dict.fromkeys(parents))
         if not parents:
             return False
-        needs = parent_ids(con, child_id, strict=True)
+        needs = parent_ids(con, child_id)
         additions = [pid for pid in parents if pid not in needs]
         if not additions:
             return False
         for parent_id in additions:
             _validate_dependency(con, parent_id, child_id)
-        from misaka.core.platform import cards
         child = get(con, child_id)
-        cards.set_fields(child["workspace"], child_id, needs=[*needs, *additions])
-        con.execute("UPDATE tasks SET status='todo' WHERE id=? AND status='ready'", (child_id,))
+        for parent_id in additions:
+            con.execute("INSERT INTO task_dependencies(child_id,parent_id) VALUES(?,?)", (child_id,parent_id))
+        con.execute("UPDATE work_requests SET revision=revision+1 WHERE id=?", (child["request_id"],))
+        con.execute("UPDATE tasks SET status=CASE WHEN status='ready' THEN 'todo' ELSE status END,generation=generation+1 WHERE id=?", (child_id,))
         for parent_id in additions:
             add_event(con, child_id, "dependency_linked", {"parent_id": parent_id})
         promote_task(con, child_id)
-        _mirror_status(con, child_id)
+
     return True
 
 
@@ -890,23 +839,15 @@ def _validate_dependency(con, parent_id, child_id):
     parent, child = get(con, parent_id), get(con, child_id)
     if parent is None or child is None:
         raise ValueError("Both ends of a dependency must be existing tasks.")
-    if parent["workspace"] != child["workspace"]:
-        raise ValueError("A dependency must stay inside one project.")
-    # Idempotency comes first, before every check that can refuse: an edge the child's file already
-    # carries is not a change to a moving card, it is that card's own history being re-posted. A
-    # resume replays a whole plan over cards that have since started, and the replay must be a
-    # no-op rather than the reason the node fails again. Only a *new* edge is refused below.
-    needs = parent_ids(con, child_id, strict=True)
+    if parent["request_id"] != child["request_id"]:
+        raise ValueError("A dependency must stay inside one work request.")
+    # Replaying an existing edge is idempotent, including on completed cards.
+    needs = parent_ids(con, child_id)
     if parent_id in needs:
         return False
     if child["status"] in {"running", "review", "done"}:
         raise ValueError(f"Child task is {child['status']}; its dependencies cannot be changed.")
-    # Cycle iff the child is already upstream of the parent. This walk is the only thing standing
-    # between a typo and a cycle written into the card files, and a cycle is not repairable by
-    # fixing the file that hid it: reconcile's fixed point then holds the whole chain at todo
-    # forever, with nothing on the board saying why. So it reads strictly -- an ancestor whose
-    # file will not parse means we do not know the graph, and an edge we cannot prove acyclic is
-    # refused. Refusing one new edge costs nobody their running work; the cycle costs the chain.
+    # A cycle exists if the child is already upstream of the proposed parent.
     seen, frontier = set(), [parent_id]
     while frontier:
         current = frontier.pop()
@@ -914,97 +855,17 @@ def _validate_dependency(con, parent_id, child_id):
             raise ValueError("Task dependency creates a cycle.")
         if current not in seen:
             seen.add(current)
-            try:
-                frontier.extend(parent_ids(con, current, strict=True))
-            except UnreadableCard as error:
-                raise ValueError(
-                    f"Dependency refused: {error} Its dependencies could decide whether this "
-                    "link closes a cycle, so fix that card first."
-                ) from error
+            frontier.extend(parent_ids(con, current))
 
-
-def _mirror_status(con, task_id):
-    """Write the live transition's at-rest fields to its authoritative card.
-
-    File-write failure aborts the SQLite transition. ``running`` remains lease-only and is
-    never mirrored. Nothing is committed: the project's git history is the user's to write.
-    """
-    row = get(con, task_id)
-    if row is None or not row["workspace"]:
-        return
-    from misaka.core.platform import cards
-    try:
-        cards.set_fields(
-            row["workspace"], task_id, status=row["status"], generation=int(row["generation"])
-        )
-    except FileNotFoundError:
-        # The card file is not merely unwritable, it is gone -- the project directory was
-        # deleted or moved. There is no at-rest truth left to protect, so aborting here only
-        # means the lease outlives its worker: `reclaim_abandoned` mirrors, so a reconciler
-        # could never release such a card and every card behind it in the loop kept its
-        # expired lease too. `board()` already models this row as `missing_file`; let the
-        # transition commit, and record that the mirror did not land.
-        #
-        # Every other write failure still aborts the transition, which is the rule this
-        # function exists to enforce: a file that exists and could not be written means the
-        # database must not claim a state the file does not show.
-        add_event(con, task_id, "card_file_missing",
-                  {"status": row["status"], "workspace": row["workspace"]},
-                  generation=row["generation"])
-
-
-class UnreadableCard(ValueError):
-    """A card file had to be read to answer this, and could not be parsed."""
-
-    def __init__(self, task_id, path, reason):
-        super().__init__(f"Card {task_id}'s file cannot be read ({reason}): {path}")
-        self.task_id, self.path, self.reason = task_id, path, reason
 
 
 @_serialized
-def parent_ids(con, task_id, *, strict=False):
-    """The card's dependencies, from its file's frontmatter ``needs`` (the table is gone).
-
-    An unreadable card answers ``[]`` for the walks that visit the whole project on one card's
-    behalf: one hand-broken file may not stop every other card (the failure is recorded in
-    ``cards.invalid_cards()``). ``strict=True`` raises :class:`UnreadableCard` instead, for the
-    caller that cannot tell "declares no dependencies" from "we could not find out" -- reading
-    the second as the first is how a cycle gets written into the files.
-
-    A card with no file at all is not that case, and is ``[]`` even under ``strict``. Such a row
-    is what ``cards.board`` shows as ``missing_file``: it has no frontmatter, so it declares no
-    dependencies and can hide no cycle, and refusing over it would refuse forever -- there is no
-    file to go and fix. Only bytes we hold and cannot parse make us say we do not know.
-    """
-    row = get(con, task_id)
-    if row is None or not row["workspace"]:
-        return []
-    from misaka.core.platform import cards
-    path = cards.card_path(row["workspace"], task_id)
-    card = cards.try_read(path)
-    if card is None:                        # unreadable: recorded in cards.invalid_cards()
-        reason = cards.unreadable_reason(path)      # None when there simply is no file
-        if strict and reason is not None:
-            raise UnreadableCard(task_id, path, reason)
-        return []
-    return [str(x) for x in card["fields"].get("needs") or []]
+def parent_ids(con, task_id):
+    return [r[0] for r in con.execute("SELECT parent_id FROM task_dependencies WHERE child_id=? ORDER BY parent_id", (task_id,))]
 
 
 def _children_of(con, parent_id):
-    """Every card in the parent's project whose file names it in ``needs``."""
-    row = get(con, parent_id)
-    if row is None or not row["workspace"]:
-        return []
-    from misaka.core.platform import cards
-    out = []
-    for tid, path in cards.iter_cards(row["workspace"]):
-        card = cards.try_read(path)
-        if card is None:                    # one broken file is one card's problem, not the
-            continue                        # whole project's: recorded in cards.invalid_cards()
-        needs = card["fields"].get("needs") or []
-        if parent_id in [str(x) for x in needs]:
-            out.append(tid)
-    return out
+    return [r[0] for r in con.execute("SELECT child_id FROM task_dependencies WHERE parent_id=? ORDER BY child_id", (parent_id,))]
 
 
 def dependency_state(con, task_id):
@@ -1012,7 +873,7 @@ def dependency_state(con, task_id):
     statuses = []
     for pid in parents:
         parent = get(con, pid)
-        statuses.append(parent["status"] if parent is not None else "done")  # a deleted parent holds nobody
+        statuses.append(parent["status"] if parent is not None else "missing")  # a deleted parent holds nobody
     if not parents or all(status == "done" for status in statuses):
         return "ready", parents
     if any(status in {"failed", "stopped"} for status in statuses):
@@ -1033,7 +894,7 @@ def promote_task(con, task_id) -> bool:
         )
         if cur.rowcount == 1:
             add_event(con, task_id, "dependencies_satisfied", {"parents": parents})
-            _mirror_status(con, task_id)
+
         return cur.rowcount == 1
 
 
@@ -1064,7 +925,7 @@ def _invalidate_descendants(con, task_id):
         return []
     marks = ",".join("?" * len(descendants))
     active = con.execute(
-        f"SELECT id FROM tasks WHERE id IN ({marks}) "
+        f"SELECT id FROM card_state WHERE id IN ({marks}) "
         "AND status IN ('running','review')",
         descendants,
     ).fetchall()
@@ -1080,7 +941,7 @@ def _invalidate_descendants(con, task_id):
         ).fetchall()]
         for child_id in changed:
             add_event(con, child_id, "dependency_invalidated", {"reopened_ancestor": task_id})
-            _mirror_status(con, child_id)
+
     return changed
 
 
@@ -1101,7 +962,7 @@ def set_workspace(con, task_id, workspace, generation=None, claim_lock=None):
         )
         if cur.rowcount == 1:
             con.execute(
-                "UPDATE task_runs SET workspace=? WHERE id=(SELECT current_run_id FROM tasks WHERE id=?)",
+                "UPDATE task_runs SET workspace=? WHERE id=(SELECT current_run_id FROM card_state WHERE id=?)",
                 (workspace, task_id),
             )
         return cur.rowcount == 1
@@ -1126,7 +987,7 @@ def set_runtime(con, task_id, agent_id, session_file, generation=None, claim_loc
         )
         if cur.rowcount == 1:
             con.execute(
-                "UPDATE task_runs SET session_file=? WHERE id=(SELECT current_run_id FROM tasks WHERE id=?)",
+                "UPDATE task_runs SET session_file=? WHERE id=(SELECT current_run_id FROM card_state WHERE id=?)",
                 (pointer, task_id),
             )
         return cur.rowcount == 1
@@ -1167,7 +1028,7 @@ def set_pid(con, task_id, pid, worker_identity=None, generation=None, claim_lock
         if cur.rowcount == 1:
             con.execute(
                 "UPDATE task_runs SET pid=?,process_identity=? "
-                "WHERE id=(SELECT current_run_id FROM tasks WHERE id=?)",
+                "WHERE id=(SELECT current_run_id FROM card_state WHERE id=?)",
                 (pid, worker_identity, task_id),
             )
         return cur.rowcount == 1
@@ -1183,15 +1044,13 @@ def configure_review(con, task_id, reviewer=None) -> bool:
         raise ValueError("The reviewer must be different from the assignee.")
     with _write_txn(con):
         cur = con.execute(
-            "UPDATE tasks SET reviewer=?,review_feedback=NULL WHERE id=? "
+            "UPDATE tasks SET reviewer=?,review_feedback=NULL,generation=generation+1 WHERE id=? "
             "AND status IN ('todo','ready')",
             (reviewer, task_id),
         )
         if cur.rowcount == 1:
             add_event(con, task_id, "review_configured", {"reviewer": reviewer})
-            if row["workspace"]:
-                from misaka.core.platform import cards
-                cards.set_fields(row["workspace"], task_id, reviewer=reviewer)   # OSError rolls the change back
+            con.execute("UPDATE work_requests SET revision=revision+1 WHERE id=?", (row["request_id"],))
         return cur.rowcount == 1
 
 
@@ -1229,7 +1088,7 @@ def _terminal_transition(
                     (task_id,),
                 )
                 promote_dependents(con, task_id)
-            _mirror_status(con, task_id)
+
         return cur.rowcount == 1
 
 
@@ -1337,9 +1196,9 @@ def mark_failed(
                 add_event(con, task_id, "cooldown", {
                     "failure_kind": kind, "seconds": delay, "until": now + delay,
                 }, generation=generation)
-                _mirror_status(con, task_id)
+
             return cur.rowcount == 1
-    row = con.execute("SELECT consecutive_failures FROM tasks WHERE id=?", (task_id,)).fetchone()
+    row = con.execute("SELECT consecutive_failures FROM card_state WHERE id=?", (task_id,)).fetchone()
     if row is None:
         return False
     failures = int(row["consecutive_failures"]) + 1
@@ -1376,7 +1235,7 @@ def mark_failed(
             )
             add_event(con, task_id, "retry_scheduled",
                       {**tally, "seconds": delay, "until": now + delay}, generation=generation)
-            _mirror_status(con, task_id)
+
         return cur.rowcount == 1
 
 
@@ -1416,7 +1275,7 @@ def mark_stopped(con, task_id, generation=None, claim_lock=None):
         )
         if cur.rowcount == 1:
             _finish_current_run(con, task_id, "stopped")
-            _mirror_status(con, task_id)
+
         return cur.rowcount == 1
 
 
@@ -1449,14 +1308,14 @@ def submit_task(con, task_id, generation=None, claim_lock=None):
         )
         if cur.rowcount == 1:
             _settle_done(con, task_id)
-            _mirror_status(con, task_id)
+
         return cur.rowcount == 1
 
 
 def _settle_done(con, task_id):
     """After a submission or an approval: close the run; a done card sheds its block and wakes
     its dependents."""
-    status = con.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()[0]
+    status = con.execute("SELECT status FROM card_state WHERE id=?", (task_id,)).fetchone()[0]
     _finish_current_run(con, task_id, "done" if status == "done" else "submitted")
     _clear_failures(con, task_id)
     if status == "done":
@@ -1483,7 +1342,7 @@ def claim_review(
     with _write_txn(con):
         row = con.execute(
             "SELECT t.generation,t.reviewer,r.phase,r.status AS run_status,r.claim_lock "
-            "FROM tasks t LEFT JOIN task_runs r ON r.id=t.current_run_id WHERE t.id=?",
+            "FROM card_state t LEFT JOIN task_runs r ON r.id=t.current_run_id WHERE t.id=?",
             (task_id,),
         ).fetchone()
         if row is None or row["reviewer"] != reviewer:
@@ -1535,12 +1394,12 @@ def approve_review(con, task_id, lock, *, generation=None, summary=None) -> bool
             )
             promote_dependents(con, task_id)
             reviewer = con.execute(
-                "SELECT reviewer FROM tasks WHERE id=?", (task_id,)
+                "SELECT reviewer FROM card_state WHERE id=?", (task_id,)
             ).fetchone()[0]
             add_event(con, task_id, "review_approved",
                       {"reviewer": reviewer, "summary": summary or ""},
                       generation=generation)
-            _mirror_status(con, task_id)
+
         return cur.rowcount == 1
 
 
@@ -1553,7 +1412,7 @@ def request_review_changes(
         raise ValueError("Review feedback cannot be empty.")
     now = int(time.time())
     state, _parents = dependency_state(con, task_id)
-    reviewer_row = con.execute("SELECT reviewer FROM tasks WHERE id=?", (task_id,)).fetchone()
+    reviewer_row = con.execute("SELECT reviewer FROM card_state WHERE id=?", (task_id,)).fetchone()
     target = "ready" if state == "ready" else "todo"
     clauses = ["id=?", "status='review'", "review_lock=?", "review_expires>=?"]
     values = [task_id, lock, now]
@@ -1571,16 +1430,16 @@ def request_review_changes(
             _finish_current_run(con, task_id, "changes_requested", summary=feedback[:1000])
             add_event(con, task_id, "review_changes", {"feedback": feedback[:4000]},
                       generation=generation)
-            ws_row = con.execute("SELECT workspace FROM tasks WHERE id=?", (task_id,)).fetchone()
+            ws_row = con.execute("SELECT workspace FROM card_state WHERE id=?", (task_id,)).fetchone()
             if ws_row is not None:
                 try:
                     from misaka.core.platform import cards
-                    cards.append_log(ws_row["workspace"], task_id,
+                    cards.append_log(con, task_id,
                                      f"reviewer:{reviewer_row[0] if reviewer_row else 'unknown'}",
                                      f"[review] {feedback[:2000]}")
                 except OSError:
                     pass                       # a stray index row without a file: the feedback column still has it
-            _mirror_status(con, task_id)
+
         return cur.rowcount == 1
 
 
@@ -1599,7 +1458,7 @@ def release_review(con, task_id, lock, *, generation=None) -> bool:
         )
         if cur.rowcount == 1:
             _finish_current_run(con, task_id, "released")
-            _mirror_status(con, task_id)
+
         return cur.rowcount == 1
 
 
@@ -1638,7 +1497,7 @@ def back_to_ready(con, task_id, generation=None, claim_lock=None):
         )
         if cur.rowcount == 1:
             _finish_current_run(con, task_id, "released")
-            _mirror_status(con, task_id)
+
         return cur.rowcount == 1
 
 
@@ -1668,7 +1527,7 @@ def reclaim_abandoned(
     ownership = (task_id, generation, claim_lock, worker_pid, worker_identity, claim_expires)
     with _write_txn(con):
         row = con.execute(
-            "SELECT consecutive_failures FROM tasks " + ownership_where, ownership
+            "SELECT consecutive_failures FROM card_state " + ownership_where, ownership
         ).fetchone()
         if row is None:
             return None
@@ -1694,7 +1553,7 @@ def reclaim_abandoned(
                       {"failure_kind": "crash", "failures": failures, "limit": FAILURE_LIMIT,
                        "reason": error[:500]},
                       generation=generation)
-        _mirror_status(con, task_id)
+
         return status
 
 
@@ -1720,21 +1579,21 @@ def claim_resume(
     at that moment does not keep her from answering (2026-10-01: card A, woken by card B's
     question, could not wake B to give the answer, since B's parent A was running)."""
     now = int(time.time())
-    if not _card_dispatchable(con, task_id, require_parents=not consult):
-        return False
     generation_clause = (
         " AND generation=?" if expected_generation is not None else ""
     )
     with _write_txn(con):
-        current = con.execute("SELECT assignee FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not _card_dispatchable(con, task_id, require_parents=not consult):
+            return False
+        current = con.execute("SELECT assignee FROM card_state WHERE id=?", (task_id,)).fetchone()
         if current is None:
             return False
         if host_cap is not None and con.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status='running' AND claim_lock IS NOT NULL"
+            "SELECT COUNT(*) FROM card_state WHERE status='running' AND claim_lock IS NOT NULL"
         ).fetchone()[0] >= max(0, int(host_cap)):
             return False
         if assignee_cap is not None and con.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status='running' AND claim_lock IS NOT NULL "
+            "SELECT COUNT(*) FROM card_state WHERE status='running' AND claim_lock IS NOT NULL "
             "AND assignee=?", (current["assignee"],)
         ).fetchone()[0] >= max(0, int(assignee_cap)):
             return False
@@ -1756,12 +1615,6 @@ def claim_resume(
         if not consult:
             _invalidate_descendants(con, task_id)     # work built on the old answer goes back to todo
         _start_run(con, task_id, int(row["generation"]), "worker", lock, pid, worker_identity)
-        # Publish the new generation under the card lock before its worker can run.
-        # Submission's Git tail holds that lock without a SQLite transaction, so an
-        # old generation can never commit bytes written by this continuation.
-        from misaka.core.platform import cards
-        workspace = get(con, task_id)["workspace"]
-        cards.set_fields(workspace, task_id, generation=int(row["generation"]))
     return True
 
 
@@ -1784,9 +1637,6 @@ def reopen_task(
         if invalidate_descendants:
             _invalidate_descendants(con, task_id)
         if target_status is None:
-            # Lenient on purpose: an unreadable card cannot reach the end of this call at all
-            # (``_mirror_status`` below rewrites its file and raises, rolling the row back), so
-            # the empty answer here is never the one that decides a reopened card's state.
             target_status = "todo" if parent_ids(con, task_id) else "ready"
         if target_status not in {"todo", "ready"}:
             raise ValueError("Only todo or ready tasks can be reset.")
@@ -1811,7 +1661,7 @@ def reopen_task(
         )
         if target_status == "todo":
             promote_task(con, task_id)
-        _mirror_status(con, task_id)
+
         return True
 
 
@@ -1874,7 +1724,7 @@ def block_task(
         if message_id is not None:
             payload["message_id"] = int(message_id)
         add_event(con, task_id, status, payload, generation=generation)
-        _mirror_status(con, task_id)
+
         return status
 
 
@@ -1883,9 +1733,6 @@ def unblock_task(con, task_id) -> bool:
     row = get(con, task_id)
     if row is None or row["status"] not in {"blocked", "triage"}:
         return False
-    # Lenient for the same reason as ``reopen_task``: the ``_mirror_status`` below cannot write
-    # an unreadable card, so such a card's unblock raises and rolls back rather than resting on
-    # this answer. Holding it at ``todo`` instead would only be undone by ``promote_task``.
     target = "todo" if parent_ids(con, task_id) else "ready"
     with _write_txn(con):
         cur = con.execute(
@@ -1898,7 +1745,7 @@ def unblock_task(con, task_id) -> bool:
             add_event(con, task_id, "unblocked", {"target": target})
             if target == "todo":
                 promote_task(con, task_id)
-            _mirror_status(con, task_id)
+
         return cur.rowcount == 1
 
 
@@ -1931,7 +1778,7 @@ def heartbeat(con, task_id, lock, *, generation=None, ttl_seconds=1800, progress
         if cur.rowcount == 1 and progress:
             con.execute(
                 "UPDATE task_runs SET heartbeat_at=? "
-                "WHERE id=(SELECT current_run_id FROM tasks WHERE id=?) AND status='running'",
+                "WHERE id=(SELECT current_run_id FROM card_state WHERE id=?) AND status='running'",
                 (now, task_id),
             )
         return cur.rowcount == 1

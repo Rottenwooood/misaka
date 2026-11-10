@@ -4,6 +4,7 @@
 driver's node processes found their claims "superseded", with no trace of what had been
 compared; and every ``logger.warning`` was painted into the pane under the cursor because
 no process had a log handler."""
+
 import logging
 import os
 
@@ -12,6 +13,7 @@ import pytest
 from misaka.config import home
 from misaka.core.platform import processes, tasks
 from misaka.core.research import runs, workflow
+from tests.factories import research_run
 
 
 def test_explain_liveness_names_the_verdict():
@@ -59,7 +61,7 @@ def test_self_drift_is_reported_once(caplog, monkeypatch):
 def _branch(tmp_path):
     con = tasks.connect(str(tmp_path / "board.db"))
     runs.init(con)
-    run = runs.create(con, workspace=str(tmp_path), question="why does it drift?",
+    run = research_run(con, workspace=str(tmp_path), question="why does it drift?",
                       limits={"max_depth": 1, "parallel": 1}, token_start=0, origin_session=None)
     node = runs.root(con, run["id"])
     return con, node["id"]

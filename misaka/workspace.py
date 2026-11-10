@@ -4,7 +4,6 @@ import os
 import re
 
 from misaka.core.documents import index as corpus
-from misaka.core.platform import cards
 from misaka.utils.markdown import atx_headings
 
 _OUTLINE_SCAN_CHARS = 256 * 1024
@@ -126,14 +125,14 @@ def _conversation_nodes(bcon, run, research_store):
 def outline(bcon, task_id=None, *, workspace=None, run_id=None, research_store=None):
     """Return the workspace tree, optionally limited to a task, a project folder, or a run."""
     if task_id:
-        tasks = [bcon.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()]
+        tasks = [bcon.execute("SELECT * FROM card_state WHERE id=?", (task_id,)).fetchone()]
     elif run_id and research_store is not None:
         tasks = list(research_store.tasks(bcon, run_id))
     elif workspace:
-        tasks = bcon.execute("SELECT * FROM tasks WHERE workspace=? ORDER BY created_at",
+        tasks = bcon.execute("SELECT * FROM card_state WHERE workspace=? ORDER BY created_at",
                              (workspace,)).fetchall()
     else:
-        tasks = bcon.execute("SELECT * FROM tasks ORDER BY created_at").fetchall()
+        tasks = bcon.execute("SELECT * FROM card_state ORDER BY created_at").fetchall()
     tasks = [t for t in tasks if t]
     by_task = {}
     all_docs = corpus.docs(workspace=workspace)
@@ -151,7 +150,7 @@ def outline(bcon, task_id=None, *, workspace=None, run_id=None, research_store=N
         for m in by_task.get(t["id"], []):
             kids.append(_doc_node(m, workspace))
         card_nodes.append({"node_id": f"task:{t['id']}", "title": f"[{t['id']}] {t['title']}",
-                           "summary": t["status"], "path": cards.card_path(t["workspace"], t["id"]),
+                           "summary": t["status"], "request_id": t["request_id"], "instance_id": t["instance_id"],
                            "nodes": kids})
 
     materials = [_doc_node(m, workspace) for m in all_docs

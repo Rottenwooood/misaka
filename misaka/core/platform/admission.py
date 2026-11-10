@@ -39,9 +39,9 @@ def occupied(con):
     from misaka.core.subagent.child import PROCESS_GROUP_IDENTITY
 
     taken = dict(con.execute(
-        "SELECT id,assignee FROM tasks WHERE status='running' AND claim_lock IS NOT NULL"))
+        "SELECT id,assignee FROM card_state WHERE status='running' AND claim_lock IS NOT NULL"))
     rows = con.execute(
-        "SELECT t.id,t.assignee,r.pid,r.process_identity FROM tasks t "
+        "SELECT t.id,t.assignee,r.pid,r.process_identity FROM card_state t "
         "JOIN task_runs r ON r.id=t.current_run_id AND r.generation=t.generation "
         "WHERE t.status IN ('done','review') AND r.phase='worker' "
         "AND r.status IN ('done','submitted') AND r.pid IS NOT NULL"

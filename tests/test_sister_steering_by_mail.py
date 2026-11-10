@@ -5,6 +5,7 @@ That lost the Enter behind a full pty input queue (B1) and could land in a pane 
 showing the card (B14). With a card address in the mailbox (B8), the note is a durable row
 that the Sister's own inbox hands her at the next tool boundary. An ally reads the same inbox,
 between its turns (2026-09-29, ACP)."""
+
 import json
 import os
 from pathlib import Path
@@ -14,8 +15,9 @@ import pytest
 
 from misaka.core.network import messages
 from misaka.core.network.wiring import network
-from misaka.core.platform import cards, tasks
+from misaka.core.platform import tasks
 from misaka.core.wiring import ToolCollector
+from tests.factories import contract_card
 
 BODY = "## deliverable\nnotes.md\n"
 SESSION = "01a0b19c-78f1-73f1-9359-7c4f1f84d959"
@@ -49,7 +51,7 @@ def world(tmp_path, monkeypatch, request):
 
 
 def _running(world, *, assignee="10032"):
-    task_id = cards.create(world.con, str(world.tmp), "T running", BODY, assignee)
+    task_id = contract_card(world.con, str(world.tmp), "T running", BODY, assignee)
     world.con.execute("UPDATE tasks SET status='running', claim_lock='net:x' WHERE id=?", (task_id,))
     world.con.commit()
     return task_id

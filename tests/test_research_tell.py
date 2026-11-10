@@ -3,6 +3,7 @@
 Every live session opens an input socket (``misaka chat --attach``), a research node's Last Order
 included, but nothing named the node's conversation to the user: a word for a node meant finding
 its session file by hand. `/research tell` and `misaka research --tell` find it."""
+
 import asyncio
 from contextlib import closing
 
@@ -12,6 +13,7 @@ from misaka.core import session_catalog, session_control
 from misaka.core.platform import repo, tasks
 from misaka.core.research import runs, window
 from misaka.core.research.wiring import research
+from tests.factories import owner, research_run
 
 
 @pytest.fixture
@@ -20,13 +22,14 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks, "task_state_dir", lambda tid: str(tmp_path / "state" / tid))
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
         runs.init(con)
+        owner(con)
         yield con
 
 
 @pytest.fixture
 def graph(board, tmp_path, monkeypatch):
     """A run whose root and one child are running, and a second child that is not."""
-    run = runs.create(board, workspace=str(tmp_path), question="How was the salt monopoly run?")
+    run = research_run(board, workspace=str(tmp_path), question="How was the salt monopoly run?")
     root = runs.root(board, run["id"])
     with tasks.write_txn(board):
         child = runs.create_node(board, run["id"], question="Who bought the licences?", parents=[root["id"]])

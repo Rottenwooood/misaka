@@ -914,7 +914,6 @@ def output_limit_nudge(name):
 def task_sources(con, run, rows):
     """What each done card delivered, from frozen records only: its submitted event (this
     generation), its registered artifacts, and the evidence ledger."""
-    from misaka.core.platform import cards
 
     parts = []
     for row in rows:
@@ -935,7 +934,6 @@ def task_sources(con, run, rows):
         submitted = [item for item in payload.get("findings", [])
                      if not (isinstance(item, dict) and item.get("text") in recorded)]
         parts.append({"task_id": row["id"], "title": row["title"],
-                      "card_path": cards.card_path(row["workspace"], row["id"]),
                       "summary": str(payload.get("summary") or ""), "artifacts": artifacts,
                       "findings": finds, "submitted_findings": submitted,
                       "uncertain": payload.get("uncertain") or []})

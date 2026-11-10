@@ -2,6 +2,7 @@
 project that is megabytes (2026-09-24: 1.85 MB, 25k lines) and one call put a Sister at
 1.19M tokens, past every window in play. The view is cut at a fixed size like find/grep, and the
 cut tells the model how to narrow instead of re-reading; a small index passes untouched."""
+
 from contextlib import closing
 from types import SimpleNamespace
 
@@ -9,14 +10,15 @@ import pytest
 
 from misaka import workspace as workspace_index
 from misaka.core.platform import tasks
-from misaka.core.research import runs, tools
+from misaka.core.research import tools
+from tests.factories import research_run
 
 
 @pytest.fixture
 def view(tmp_path, monkeypatch):
     db = tmp_path / "board.db"
     with closing(tasks.connect(str(db))) as con:
-        run = runs.create(con, workspace=str(tmp_path), question="Fixture question")
+        run = research_run(con, workspace=str(tmp_path), question="Fixture question")
     defs = []
     tools.register(SimpleNamespace(registerTool=defs.append))
     monkeypatch.setattr(tools, "CFG", {"db": str(db)})

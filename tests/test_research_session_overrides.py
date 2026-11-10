@@ -3,6 +3,7 @@
 They apply to the sessions working for that run -- the window where it was started, its fork
 nodes, its Sisters' cards -- and to nothing else: the global settings are never written.
 """
+
 import asyncio
 import json
 from contextlib import closing
@@ -17,6 +18,7 @@ from misaka.core.platform import cards, repo, tasks
 from misaka.core.research import runs, workflow
 from misaka.core.research.wiring import research
 from misaka.core.wiring import SessionSpec, spec_overrides
+from tests.factories import contract_card, owner, research_run
 
 
 def _session(session_id="s-1", stream=None):
@@ -189,17 +191,18 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks, "task_state_dir", lambda tid: str(tmp_path / "state" / tid))
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
         runs.init(con)
+        owner(con)
         yield con
 
 
 def test_a_research_card_carries_its_runs_settings(board, tmp_path):
-    run = runs.create(board, workspace=str(tmp_path), question="Why did it fail?",
+    run = research_run(board, workspace=str(tmp_path), question="Why did it fail?",
                       limits={"context_threshold": 0.5, "max_output_tokens": 64_000})
-    plain = runs.create(board, workspace=str(tmp_path), question="Why did it succeed?")
+    plain = research_run(board, workspace=str(tmp_path), question="Why did it succeed?")
     root = runs.nodes(board, run["id"])[0]
-    card = cards.create(board, run["workspace"], "Read the sources", "body", "10032")
+    card = contract_card(board, run["workspace"], "Read the sources", "body", "10032")
     runs.link_task(board, run["id"], card, kind="research", node=root, local_id="sources")
-    other = cards.create(board, run["workspace"], "An ordinary card", "body", "10032")
+    other = contract_card(board, run["workspace"], "An ordinary card", "body", "10032")
     extras = worker.card_extras(board, tasks.get(board, card), include_materials=False)
     assert extras["_session_overrides"] == {"context_threshold": 0.5, "max_output_tokens": 64_000}
     assert worker.card_extras(board, tasks.get(board, other), include_materials=False)["_session_overrides"] == {}

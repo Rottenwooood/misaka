@@ -397,7 +397,7 @@ def list_entries(con, *, extra_paths=()):
     links = {r["task_id"]: dict(r) for r in con.execute("SELECT * FROM research_run_tasks")} if "research_run_tasks" in tables else {}
     cards = {}
     if "tasks" in tables:
-        for row in con.execute("SELECT * FROM tasks"):
+        for row in con.execute("SELECT * FROM card_state"):
             directory = os.path.realpath(sessions.card_session_dir(row))
             roots.add(directory)
             cards[directory] = dict(row)

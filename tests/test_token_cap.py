@@ -3,6 +3,7 @@
 A run used to get one fixed 32,768-token slice for its whole life -- smaller than one research
 request, so a cap stopped every run at its first call -- and only a session's own turns were
 bounded: compaction, the vision bridge, MoA and LCM spent outside it, most of them unrecorded."""
+
 import asyncio
 import json
 import os
@@ -32,6 +33,7 @@ from misaka.ai.utils.retry import RETRYABLE_PROVIDER_ERROR_PATTERN
 from misaka.core.network import dispatch, worker
 from misaka.core.platform import budget, metering, repo, tasks
 from misaka.core.research import runs
+from tests.factories import execution_card, research_run
 
 USED = 1500
 
@@ -43,8 +45,8 @@ def board(tmp_path, monkeypatch):
     path = str(tmp_path / "board.db")
     with closing(tasks.connect(path)) as con:
         runs.init(con)
-        run = runs.create(con, workspace=str(tmp_path), question="How was the salt monopoly run?")
-        card = tasks.create_task(con, "licences", assignee="10032", workspace=str(tmp_path))
+        run = research_run(con, workspace=str(tmp_path), question="How was the salt monopoly run?")
+        card = execution_card(con, "licences", assignee="10032", workspace=str(tmp_path))
         runs.link_task(con, run["id"], card, kind="research", node=runs.root(con, run["id"]), local_id="a")
         yield SimpleNamespace(con=con, path=path, run=run["id"], card=card)
 

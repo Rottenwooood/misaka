@@ -1,4 +1,5 @@
 """Research descriptions follow the owning window, not one entry-point's callbacks."""
+
 import asyncio
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -10,12 +11,13 @@ from misaka.core.network.wiring.capabilities import SisterCapabilitiesPart
 from misaka.core.platform import tasks
 from misaka.core.research import runs, window, workflow
 from misaka.core.session_control import SessionControl
+from tests.factories import research_run
 
 
 @pytest.fixture
 def research(tmp_path, monkeypatch):
     con = tasks.connect(str(tmp_path / "board.db"))
-    run = runs.create(con, workspace=str(tmp_path), question="Description fixture")
+    run = research_run(con, workspace=str(tmp_path), question="Description fixture")
     root = runs.nodes(con, run["id"])[0]
     publisher = SisterCapabilitiesPart(str(tmp_path), [])
     session = SimpleNamespace(

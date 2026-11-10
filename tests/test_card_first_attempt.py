@@ -2,6 +2,7 @@
 
 2026-09-18 (B16): the in-process runtime raised "no resumable Sister session" for a card that
 was stopped before its first turn, and every other tool refused it too."""
+
 import asyncio
 from contextlib import closing
 from types import SimpleNamespace
@@ -10,7 +11,8 @@ from typing import ClassVar
 import pytest
 
 from misaka.core.network import messages, sister_runtime
-from misaka.core.platform import cards, tasks
+from misaka.core.platform import tasks
+from tests.factories import contract_card
 
 BODY = "## deliverable\nnotes.md\n"
 
@@ -51,9 +53,9 @@ def board(tmp_path, request):
 
 
 def _never_ran(con, tmp_path):
-    task_id = cards.create(con, str(tmp_path), "T never ran", BODY, "10032")
+    task_id = contract_card(con, str(tmp_path), "T never ran", BODY, "10032")
     con.execute("UPDATE tasks SET status='stopped' WHERE id=?", (task_id,))
-    tasks._mirror_status(con, task_id)
+
     con.commit()
     return task_id
 

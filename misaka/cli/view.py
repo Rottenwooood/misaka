@@ -22,6 +22,7 @@ def run(args):
 
         argv, env = command(projects)
         try:
+            client.check_protocol(client.request("ping",timeout=2))
             result = client.request(
                 "pane.create",
                 {"argv": argv, "cwd": projects[0], "title": "Tasks · 只读", "env": env},
@@ -36,11 +37,11 @@ def run(args):
         snapshot = reader.read()
         print(json.dumps(snapshot, ensure_ascii=False, indent=2))
         return int(
-            snapshot["runtime_state"] == "error"
+            snapshot["state_status"] == "error"
             or any(
                 p["errors"]
-                or any(n["errors"] or n["missing_needs"] for n in p["nodes"])
-                or any(g["cycle_or_downstream"] for g in p["groups"])
+                or any(n["errors"] for n in p["nodes"])
+                or any(g["errors"] for g in p["requests"])
                 for p in snapshot["projects"]
             )
         )

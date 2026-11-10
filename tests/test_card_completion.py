@@ -6,6 +6,7 @@ rework", a side errand -- ended a turn and the turn ended the card, even one who
 said "not submitting yet". Ten of ten submissions that day answered a message, never the
 contract. Now completion is explicit, gated on the contract deliverable, and a turn without
 it leaves the card running."""
+
 import os
 import time
 
@@ -13,6 +14,7 @@ import pytest
 
 from misaka.core.network import todo, worker
 from misaka.core.platform import tasks
+from tests.factories import contract_card
 
 BODY = ("## research question\nWhy?\n\n## deliverable\nchoson-tusol-genealogy.md\n"
         "Write it under the deliverable location the card names.\n\n## boundaries\nnone\n")
@@ -40,12 +42,11 @@ class _Session:
 def _board(tmp_path, request, body=BODY):
     """A running card the way the daemon leaves one: file written (the file is the contract),
     row claimed under ``lock1`` at generation 1, output directory set."""
-    from misaka.core.platform import cards
     con = tasks.connect(str(tmp_path / "board.db"))
     request.addfinalizer(con.close)
     out = tmp_path / "nodes" / "cards" / "t1"
     out.mkdir(parents=True)
-    tid = cards.create(con, str(tmp_path), "T5 genealogy", body, "10032")
+    tid = contract_card(con, str(tmp_path), "T5 genealogy", body, "10032")
     con.execute("UPDATE tasks SET status='running', claim_lock='lock1', claim_expires=?, output_dir=?, "
                 "worker_pid=? WHERE id=?", (int(time.time()) + 1800, str(out), os.getpid(), tid))
     from misaka.core.network import worker

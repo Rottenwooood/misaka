@@ -3,6 +3,7 @@
 2026-09-23: the root plan turn wrote a plan longer than the reply's output cap, lost it to
 truncation, and then shrank the plan to fit one call -- the tool replaced the record wholesale,
 so it could not be split. An append call folds onto the recorded plan instead."""
+
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ import pytest
 from misaka.core.platform import tasks
 from misaka.core.research import commands, planner, runs
 from misaka.core.research.prompting import RESEARCH_LO_ORCHESTRATION
+from tests.factories import research_run
 
 ROSTER = [{"id": "10032"}, {"id": "10043"}]
 
@@ -32,7 +34,7 @@ def validate(value):
 @pytest.fixture
 def state(tmp_path, monkeypatch):
     con = tasks.connect(str(tmp_path / "board.db"))
-    run = runs.create(con, workspace=str(tmp_path), question="fixture")
+    run = research_run(con, workspace=str(tmp_path), question="fixture")
     root = runs.nodes(con, run["id"])[0]
     assert runs.acquire_driver(con, run["id"], "driver")
     runs.prepare_runner(con, "research_branches", root["id"])

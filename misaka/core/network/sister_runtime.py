@@ -588,7 +588,7 @@ class SisterRuntime:
         from misaka.core.platform import cards
         task = dict(row)
         base = row["workspace"] or self._workspace(row["id"])
-        task["_attachments"] = cards.attachment_list(base, row["id"], workspace=row["workspace"])
+        task["_attachments"] = cards.attachment_list(self.con, base, row["id"])
         task["_handoffs"] = worker.card_handoffs(self.con, row)
         task.update(worker.card_extras(self.con, row, self.cfg))
         reading = budget.status(self.con, self.cfg.get("token_cap"), task_id=row["id"])

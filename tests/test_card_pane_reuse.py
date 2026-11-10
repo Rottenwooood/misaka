@@ -7,6 +7,7 @@ card's session launched another full `card-shell --resume` -- an agent that coul
 that transcript and whose catalog record overwrote the runner's. Last Order, holding three panes
 for one card and a tool that refused to close any of them, ended up killing processes by PID.
 """
+
 import asyncio
 import json
 import os
@@ -17,8 +18,9 @@ from types import SimpleNamespace
 import pytest
 
 from misaka.config import sessions as session_roots
-from misaka.core.platform import cards, tasks
+from misaka.core.platform import tasks
 from misaka.ui.panel import daemon as d
+from tests.factories import contract_card
 
 BODY = "## deliverable\nnotes.md\n"
 IDLE = [sys.executable, "-c", "import time; time.sleep(60)"]
@@ -59,9 +61,9 @@ def panel(home, request):
 
 def _card(panel, workspace, *, status="done", title="T4 crossover", assignee="10032"):
     con = panel._board()
-    task_id = cards.create(con, str(workspace), title, BODY, assignee)
+    task_id = contract_card(con, str(workspace), title, BODY, assignee)
     con.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
-    tasks._mirror_status(con, task_id)
+
     con.commit()
     row = tasks.get(con, task_id)
     directory = session_roots.card_session_dir(row)
@@ -429,7 +431,7 @@ async def test_a_card_woken_to_answer_a_message_leaves_the_cards_built_on_it_alo
     con = panel._board()
     tasks.link_dependencies(con, [a], b)        # edges are drawn before a card finishes
     con.execute("UPDATE tasks SET status='done' WHERE id=?", (b,))
-    tasks._mirror_status(con, b)
+
     con.commit()
     before = tasks.get(con, b)
 
@@ -446,7 +448,7 @@ async def test_continuing_a_card_as_rework_still_sends_its_dependents_back(panel
     con = panel._board()
     tasks.link_dependencies(con, [a], b)        # edges are drawn before a card finishes
     con.execute("UPDATE tasks SET status='done' WHERE id=?", (b,))
-    tasks._mirror_status(con, b)
+
     con.commit()
 
     await panel.continue_card(a, "redo the timeline")
@@ -463,9 +465,9 @@ async def test_a_card_answers_a_message_while_its_parent_is_running(panel, home)
     con = panel._board()
     tasks.link_dependencies(con, [a], b)
     con.execute("UPDATE tasks SET status='done' WHERE id=?", (b,))
-    tasks._mirror_status(con, b)
+
     con.execute("UPDATE tasks SET status='running' WHERE id=?", (a,))     # A answering B, woken
-    tasks._mirror_status(con, a)
+
     con.commit()
 
     with pytest.raises(ValueError, match="could not be claimed"):

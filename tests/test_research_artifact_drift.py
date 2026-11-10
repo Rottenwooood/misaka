@@ -6,6 +6,7 @@ artifact changed before Research registration", and `/research resume` re-hit it
 changed paths across 6 cards on run r_5b1357a9c6). Now the card's own changed files send the card
 back to its Sister to declare again, derived and shared files are skipped, and a halt leaves the
 reopening to resume."""
+
 import hashlib
 from contextlib import closing
 from pathlib import Path
@@ -13,8 +14,9 @@ from pathlib import Path
 import pytest
 
 from misaka.core.network import dispatch
-from misaka.core.platform import cards, repo, tasks
+from misaka.core.platform import repo, tasks
 from misaka.core.research import runs, workflow
+from tests.factories import contract_card, research_run
 
 
 @pytest.fixture
@@ -22,13 +24,13 @@ def state(tmp_path, monkeypatch):
     monkeypatch.setattr(repo, "enabled", lambda *a: False)
     monkeypatch.setattr(workflow, "_bundle", lambda *a, **k: None)
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
-        run = runs.create(con, workspace=str(tmp_path), question="Fixture question")
+        run = research_run(con, workspace=str(tmp_path), question="Fixture question")
         yield con, run, runs.nodes(con, run["id"])[0]
 
 
 def _accept(con, run, root, local_id, files):
     """A card accepted with ``files`` ({relative-to-output-dir or workspace path: text}) declared."""
-    tid = cards.create(con, run["workspace"], f"card {local_id}", "fixture body", "fixture")
+    tid = contract_card(con, run["workspace"], f"card {local_id}", "fixture body", "fixture")
     runs.link_task(con, run["id"], tid, kind="research", node=root, local_id=local_id)
     task = tasks.get(con, tid)
     rels = []

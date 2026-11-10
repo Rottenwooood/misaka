@@ -1,4 +1,5 @@
 """A research driver reads research.token_cap as its cards do (0.18.9 sweep, G2)."""
+
 import asyncio
 from contextlib import closing
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 from misaka.core.network import dispatch
 from misaka.core.platform import budget, repo, tasks
 from misaka.core.research import runs, workflow
+from tests.factories import contract_card, research_run
 
 
 @pytest.fixture
@@ -17,9 +19,8 @@ def board(tmp_path, monkeypatch):
     path = str(tmp_path / "board.db")
     with closing(tasks.connect(path)) as con:
         runs.init(con)
-        run = runs.create(con, workspace=str(tmp_path), question="How was the salt monopoly run?")
-        from misaka.core.platform import cards
-        card = cards.create(con, str(tmp_path), "licences", "body", "10032")
+        run = research_run(con, workspace=str(tmp_path), question="How was the salt monopoly run?")
+        card = contract_card(con, str(tmp_path), "licences", "body", "10032")
         runs.link_task(con, run["id"], card, kind="research", node=runs.root(con, run["id"]), local_id="a")
         yield SimpleNamespace(con=con, path=path, run=run["id"], card=card, tmp=tmp_path)
 

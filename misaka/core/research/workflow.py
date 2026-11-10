@@ -28,7 +28,7 @@ from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 
 from misaka import workspace as workspace_index
-from misaka.core.platform import budget, prompt_guard
+from misaka.core.platform import budget, prompt_guard, work
 from misaka.core.platform import cards as card_files
 from misaka.core.platform import tasks as task_store
 from misaka.core.research import bundle, commands, graph, ledger, planner, report, runs
@@ -341,11 +341,17 @@ async def _submit_tasks(con, run, node, specs, *, kind, progress=None, round=1, 
                 continue
             if existing:                                   # the card was deleted: drop the stale link and rebuild it
                 con.execute("DELETE FROM research_run_tasks WHERE task_id=?", (existing["task_id"],))
+            template = con.execute("SELECT revision FROM templates WHERE id=? AND role='sister' ORDER BY revision DESC LIMIT 1", (spec["assignee"],)).fetchone()
+            if template is None:
+                raise ValueError(f"Register Sister template {spec['assignee']} with misaka_state before research")
+            instance_id = "i_" + secrets.token_hex(6)
+            work.apply(con,[{"op":"instance.create","id":instance_id,"template_id":spec["assignee"],
+                             "template_revision":template['revision']}])
             tid = card_files.create(
                 con, root, spec["title"],
                 planner.task_body(spec, run_id=run["id"], node=node, siblings=specs, previous=previous,
                                   lo_session=planner.lo_session_file(run, node)),
-                spec["assignee"], priority=spec.get("priority", 0),
+                instance_id, request_id=run["id"], priority=spec.get("priority", 0),
                 needs=[local_to_task[dep] for dep in spec.get("dependencies") or []],
                 after_row=lambda tid, spec=spec: runs.link_task(   # linked before the file exists
                     con, run["id"], tid, kind=kind, node=node, round=round,
@@ -355,7 +361,7 @@ async def _submit_tasks(con, run, node, specs, *, kind, progress=None, round=1, 
                         run, task_id=tid, local_id=spec["local_id"], dependencies=spec.get("dependencies") or [])
     if runs.stop_requested(con, run["id"]):
         return local_to_task
-    # depends_json keeps Last Order's plan as written; the cards' frontmatter `needs` is the executable projection of it.
+    # depends_json keeps Last Order's plan as written; task_dependencies is its executable card plan.
     for spec in specs:
         if spec["local_id"] not in local_to_task:
             continue

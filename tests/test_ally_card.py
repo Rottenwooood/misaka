@@ -1,6 +1,7 @@
 """An ally's card over ACP (misaka/core/network/ally). The runner drives a real agent process -- a
 scripted one, ``fake_acp_agent.py`` -- which reaches the card's tools through the real MCP bridge
 (``misaka ally-bridge``), started the way an ally starts it: from ``session/new``'s mcpServers."""
+
 import asyncio
 import io
 import json
@@ -18,6 +19,7 @@ from misaka.core.network import dispatch, messages, worker
 from misaka.core.network.ally import card as ally_card
 from misaka.core.platform import cards, processes, tasks
 from misaka.core.research import runs
+from tests.factories import contract_card, research_run
 
 FAKE = str(Path(__file__).with_name("fake_acp_agent.py"))
 BODY = "## goal\nWrite the report.\n\n## deliverable\nreport.md\n\n## acceptance criteria\n- report.md exists\n"
@@ -35,14 +37,14 @@ class Ally:
         self.project.mkdir()
         self.con = tasks.connect(CFG["db"])
         if kind is None:
-            self.tid = cards.create(self.con, str(self.project), "Write the report", BODY, "fake")
+            self.tid = contract_card(self.con, str(self.project), "Write the report", BODY, "fake")
             self.out = self.project / "out"
             self.out.mkdir()
             self.con.execute("UPDATE tasks SET output_dir=? WHERE id=?", (str(self.out), self.tid))
         else:
-            run = runs.create(self.con, workspace=str(self.project), question="Why?")
+            run = research_run(self.con, workspace=str(self.project), question="Why?")
             self.run, root = run, runs.root(self.con, run["id"])
-            self.tid = cards.create(self.con, str(self.project), "Review", "## deliverable\nreport.md\n", "fake",
+            self.tid = contract_card(self.con, str(self.project), "Review", "## deliverable\nreport.md\n", "fake",
                                     after_row=lambda tid: runs.link_task(self.con, run["id"], tid, kind=kind, node=root))
             self.out = Path(tasks.get(self.con, self.tid)["output_dir"])
 
@@ -117,7 +119,7 @@ async def test_a_turn_that_declares_completion_submits_the_card_like_a_sisters(m
     submitted = ally.payload("submitted")
     assert submitted["summary"] == "The report is written."
     assert "out/report.md" in submitted["artifacts"] and submitted["artifact_digests"]["out/report.md"]
-    assert "outline settled" in "\n".join(cards.read_log(str(ally.project), ally.tid))
+    assert "outline settled" in "\n".join(cards.read_log(ally.con, ally.tid))
     # The card's tools, lent through the bridge, are the Sister's definitions.
     assert {"misaka_card_complete", "misaka_card_note", "misaka_todo", "misaka_my_card", "SendMessage",
             "misaka_research_view", "doc_list", "doc_read"} <= set(ally.logged("tools")[0]["names"])
@@ -304,7 +306,7 @@ def test_the_planning_roster_lists_usable_allies(make):
 def test_a_name_reaches_the_ally_card_in_the_senders_space_only(make, space):
     ally = make()
     for index, other in enumerate(("space-a", "space-b")):
-        tid = ally.tid if other == space else cards.create(ally.con, str(ally.project), "Other", BODY, "fake")
+        tid = ally.tid if other == space else contract_card(ally.con, str(ally.project), "Other", BODY, "fake")
         assert tasks.claim(ally.con, tid, f"lock-{index}", generation=1, pid=os.getpid())
         session_catalog._write(session_catalog._index_dir() / f"{other}.json", {
             "id": f"0123abcd-0000-4000-8000-00000000000{index}", "path": None, "role": "fake", "kind": "card",

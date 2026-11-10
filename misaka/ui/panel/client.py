@@ -106,38 +106,23 @@ def _spawn_and_wait(timeout):
     ) from None
 
 
+def check_protocol(info):
+    """Accept exactly this build. A mismatch never stops or replaces another daemon."""
+    from misaka.ui.panel.daemon import PROTOCOL
+    if info.get("proto") != PROTOCOL:
+        raise RuntimeError(
+            f"Daemon protocol mismatch: {info.get('proto')}, expected {PROTOCOL}. "
+            "Use a separate MISAKA_HOME or explicitly stop that daemon before starting this build."
+        )
+    return info
+
+
 def ensure(timeout=8.0):
-    """Connect to the daemon, starting it if needed.
-
-    On a protocol mismatch (an old daemon survived an upgrade): replace it in
-    place when no cards are running; refuse with an explanation when cards are
-    running. Never serve from a stale daemon.
-    """
-    from misaka.ui.panel import daemon as _d
-
+    """Connect to a matching daemon, starting one only when none is listening."""
     check_sock_path()
     try:
         info = request("ping", timeout=2)
     except (ConnectionError, FileNotFoundError, OSError):
         _wait_for_dying_daemon(timeout=min(3.0, timeout))
-        return _spawn_and_wait(timeout)
-    if info.get("proto") == _d.PROTOCOL:
-        return info
-    try:
-        panes = request("panes.list")["panes"]
-    except (RuntimeError, ConnectionError, OSError):
-        panes = []
-    if any(p.get("card") and p.get("alive") for p in panes):
-        raise RuntimeError(
-            "The daemon is an older version and still has a running task card in a pane. Wait for it to finish, "
-            "or run `misaka net stop` once you are sure it can be discarded, then reopen the panel."
-        )
-    try:
-        request("server.stop")
-    except (RuntimeError, ConnectionError, OSError):
-        pass
-    _wait_for_dying_daemon(timeout=min(3.0, timeout))
-    info = _spawn_and_wait(timeout)
-    if info.get("proto") != _d.PROTOCOL:
-        raise RuntimeError("The restarted daemon still has a protocol mismatch (an older MISAKA may be on PATH).")
-    return info
+        return check_protocol(_spawn_and_wait(timeout))
+    return check_protocol(info)

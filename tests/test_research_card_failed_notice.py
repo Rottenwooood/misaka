@@ -2,6 +2,7 @@
 
 What becomes of it is decided once the phase's other cards are back; until then a card could sit
 failed on the board with nobody told -- in the report, until the user stopped the run."""
+
 import asyncio
 from contextlib import closing
 
@@ -9,6 +10,7 @@ import pytest
 
 from misaka.core.platform import repo, tasks
 from misaka.core.research import runs, workflow
+from tests.factories import execution_card, owner, research_run
 
 
 @pytest.fixture
@@ -17,15 +19,16 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks, "task_state_dir", lambda tid: str(tmp_path / "state" / tid))
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
         runs.init(con)
+        owner(con)
         yield con
 
 
 def test_a_failed_card_is_told_of_once_and_an_old_failure_not_again(board, tmp_path):
-    run = runs.create(board, workspace=str(tmp_path), question="How was the salt monopoly run?")
+    run = research_run(board, workspace=str(tmp_path), question="How was the salt monopoly run?")
     root = runs.root(board, run["id"])
     ids = []
     for title in ("licences", "smuggling", "earlier"):
-        tid = tasks.create_task(board, title, assignee="10032", workspace=str(tmp_path))
+        tid = execution_card(board, title, assignee="10032", workspace=str(tmp_path))
         runs.link_task(board, run["id"], tid, kind="research", node=root, local_id=title)
         ids.append(tid)
     licences, smuggling, earlier = ids

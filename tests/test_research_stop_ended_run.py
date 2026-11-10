@@ -1,5 +1,6 @@
 """/research stop RUN_ID on a run that has ended says so and drives nothing: the driver it
 started ran the failed run again, its turns spent for a stop (0.18.10 sweep)."""
+
 import asyncio
 from contextlib import asynccontextmanager, closing
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from misaka.core.platform import repo, tasks
 from misaka.core.research import runs
 from misaka.core.research import window as research_window
 from misaka.core.research.wiring import research
+from tests.factories import owner, research_run
 
 
 @pytest.fixture
@@ -17,6 +19,7 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(repo, "enabled", lambda *a: False)
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
         runs.init(con)
+        owner(con)
         yield con
 
 
@@ -47,7 +50,7 @@ async def test_stopping_a_run_that_has_ended_drives_nothing(board, tmp_path, mon
     ctx = SimpleNamespace(cwd=str(tmp_path), isIdle=lambda: True,
                           sessionManager=SimpleNamespace(sessionId="s", sessionFile=str(tmp_path / "w.jsonl")),
                           ui=SimpleNamespace(notify=lambda text, kind: notices.append((text, kind))))
-    run = runs.create(board, workspace=research._workspace(ctx), question="Fixture question")
+    run = research_run(board, workspace=research._workspace(ctx), question="Fixture question")
     runs.set_state(board, run["id"], status="failed", error="earlier failure")
     await part.commands[0].handler(f"stop {run['id']}", ctx)
     for _ in range(50):

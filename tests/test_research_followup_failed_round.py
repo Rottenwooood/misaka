@@ -10,7 +10,7 @@ from test_research_node_routine import (  # noqa: F401
     lab,
 )
 
-from misaka.core.platform import cards, tasks
+from misaka.core.platform import tasks
 from misaka.core.research import planner, runs, workflow
 
 
@@ -40,7 +40,7 @@ async def test_a_failed_follow_up_round_concluded_without_closes_the_node(lab): 
         for row in runs.tasks(con, run_id):
             if row["id"] in scope and (row["local_id"] or "").startswith("r2/") and row["status"] != "failed":
                 con.execute("UPDATE tasks SET status='failed' WHERE id=?", (row["id"],))
-                cards.set_fields(row["workspace"], row["id"], status="failed", generation=row["generation"])
+
                 tasks.add_event(con, row["id"], "failed", {"reason": "502"}, generation=row["generation"])
                 return "failed"
         return await scripted_drive(con_, cfg, runner, run_id, scope=scope, **kw)

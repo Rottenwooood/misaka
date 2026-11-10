@@ -271,7 +271,7 @@ def _run_cards(role, *, sender_task, sender_session):
         run, branch = _sender_node(board, sender_task=sender_task, sender_session=sender_session)
         if run is None:
             return []
-        query = ("SELECT t.id, t.status, t.title FROM research_run_tasks l JOIN tasks t ON t.id=l.task_id "
+        query = ("SELECT t.id, t.status, t.title FROM research_run_tasks l JOIN card_state t ON t.id=l.task_id "
                  "WHERE l.run_id=? AND t.assignee=? AND t.id IS NOT ?")
         rows = board.execute(query + " AND l.branch_id=? ORDER BY t.created_at",
                              (run, role, sender_task, branch)).fetchall() if branch else []
@@ -504,7 +504,11 @@ def send_as(sender, addr, message, summary, *, request_input=False, card_task=No
                                 f"it.]\n{message}")
         from misaka.core.platform import cards
         try:
-            cards.append_log(target["workspace"], target["to_task"], sender, f"[message] {message}")
+            from contextlib import closing
+
+            from misaka.core.platform import tasks
+            with closing(tasks.connect(_board_path())) as board:
+                cards.append_log(board, target["to_task"], sender, f"[message] {message}")
         except OSError:
             pass
         return {"content": [{"type": "text", "text": (

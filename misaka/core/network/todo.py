@@ -20,7 +20,7 @@ def _flat(s, cap):
 
 def add(con, task_id, text, parent_id=None, owner=None):
     """Add a to-do item to a card; return ``(todo_id, error)``."""
-    task = con.execute("SELECT generation FROM tasks WHERE id=?", (task_id,)).fetchone()
+    task = con.execute("SELECT generation FROM card_state WHERE id=?", (task_id,)).fetchone()
     if task is None:
         return None, f"Card not found: {task_id}"
     text = _flat(text, MAX_TEXT)
@@ -264,7 +264,7 @@ class TodoPart:
                      f"generation {row['generation']}"]
             if row["block_reason"]:
                 lines.append(f"blocked: {row['block_reason']}")
-            log = cards.read_log(row["workspace"], task_id)
+            log = cards.read_log(c, task_id)
             if log:
                 lines += ["log:", *(f"  {line}" for line in log[-20:])]
             return _text("\n".join(lines))
@@ -293,7 +293,6 @@ class TodoPart:
             from misaka.core.platform import cards
             p = raw if isinstance(raw, NoteParams) else NoteParams(**(raw or {}))
             c = con()
-            row = bdb.get(c, task_id)
             evidence = {
                 "findings": [item.model_dump(exclude_none=True) for item in p.findings],
                 "uncertain": [item.strip() for item in p.uncertain if item.strip()],
@@ -340,7 +339,7 @@ class TodoPart:
                     claim_lock=None if finished else claim_lock,
                 ):
                     raise ValueError("Card ownership changed before its research evidence was recorded.")
-            cards.append_log(row["workspace"], task_id, sender, p.text)
+            cards.append_log(c, task_id, sender, p.text)
             recorded = [f"{len(evidence['findings'])} finding(s)" if evidence["findings"] else "",
                         f"{len(evidence['uncertain'])} uncertainty(ies)" if evidence["uncertain"] else "",
                         f"{len(p.issues)} issue(s)" if p.issues is not None else "",

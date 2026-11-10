@@ -1,6 +1,7 @@
 """A run whose root conversation was recorded but never written (it failed before the first entry
 was persisted) is resumed in a new conversation: asked for by name, the missing file raised
 FileNotFoundError on every resume, and the CLI showed a traceback (0.18.10 sweep)."""
+
 import os
 from contextlib import closing
 
@@ -10,6 +11,7 @@ from misaka.config import current_config
 from misaka.core.platform import repo, tasks
 from misaka.core.research import node as research_node
 from misaka.core.research import runs, workflow
+from tests.factories import research_run
 
 
 async def test_a_resume_does_not_ask_for_a_conversation_that_was_never_written(tmp_path, monkeypatch):
@@ -18,7 +20,13 @@ async def test_a_resume_does_not_ask_for_a_conversation_that_was_never_written(t
     cfg["db"] = str(tmp_path / "board.db")
     with closing(tasks.connect(cfg["db"])) as con:
         runs.init(con)
-        run = runs.create(con, workspace=str(tmp_path), question="Fixture question")
+        run = research_run(con, workspace=str(tmp_path), question="Fixture question")
+        from misaka.core.research import planner
+        monkeypatch.setattr(planner,"sister_catalog",lambda *args,**kwargs:[{"id":"10032"}])
+        def no_model(*args, **kwargs):
+            assert kwargs.get("session_file") != missing, "The missing session must be replaced"
+            return None, "", "No model is available"
+        monkeypatch.setattr(planner,"_call",no_model)
         missing = str(tmp_path / "sessions" / "root.jsonl")
         os.makedirs(os.path.dirname(missing))
         runs.set_state(con, run["id"], status="failed", root_session=missing)

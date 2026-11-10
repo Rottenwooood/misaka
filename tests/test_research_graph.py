@@ -1,6 +1,7 @@
 """The research graph's storage and structural rules: nodes and edges, decisions and options,
 reconciliation, closing, and the views written into the project. Structure only -- nothing
 here judges what a node found."""
+
 import json
 from contextlib import closing
 
@@ -8,6 +9,7 @@ import pytest
 
 from misaka.core.platform import tasks
 from misaka.core.research import graph, runs, workflow
+from tests.factories import research_run
 
 
 @pytest.fixture
@@ -17,7 +19,7 @@ def board(tmp_path):
 
 
 def _run(con, tmp_path, **limits):
-    run = runs.create(con, workspace=str(tmp_path), question="Why did the reform fail?", limits=limits or None)
+    run = research_run(con, workspace=str(tmp_path), question="Why did the reform fail?", limits=limits or None)
     assert runs.acquire_driver(con, run["id"], "driver:test")
     return runs.get(con, run["id"]), runs.root(con, run["id"])
 
@@ -92,7 +94,7 @@ def test_a_parent_from_another_run_is_refused(board, tmp_path):
     run, _root = _run(board, tmp_path)
     other_dir = tmp_path / "other"
     other_dir.mkdir()
-    other = runs.create(board, workspace=str(other_dir), question="Another question")
+    other = research_run(board, workspace=str(other_dir), question="Another question")
     with pytest.raises(ValueError, match="same run"):
         runs.create_node(board, run["id"], question="Crossed", parents=[runs.root(board, other["id"])["id"]])
 
@@ -318,7 +320,7 @@ def test_an_older_board_is_refused_and_left_as_it_is(tmp_path):
             del con._research_schema_checked
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con, pytest.raises(RuntimeError) as error:
         runs.init(con)
-    assert "v16" in str(error.value) and "pre-release data is not migrated" in str(error.value)
+    assert "v16" in str(error.value) and "does not migrate stored data" in str(error.value)
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
         assert not con.execute("SELECT 1 FROM sqlite_master WHERE name='research_edges'").fetchone()
 

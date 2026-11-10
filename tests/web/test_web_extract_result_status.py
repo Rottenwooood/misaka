@@ -1,4 +1,5 @@
 """MISAKA's result envelope, not Hermes' extraction algorithm, owns tool status."""
+
 import json
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ from misaka.ai.types import ToolCall
 from misaka.core.platform.prompt_guard import untrusted
 from misaka.core.web import extract
 from misaka.core.wiring import ToolCollector
+from tests.factories import contract_card
 
 CASES = [
     pytest.param({'results': [{'content': 'Page text', 'error': None}]}, False, [], id='error-null'),
@@ -83,7 +85,7 @@ async def test_extract_status_reaches_native_host(web_session, monkeypatch, payl
 @pytest.mark.parametrize('saved_only', [False, True])
 async def test_partial_success_keeps_card_artifact_and_research_source(web_session, scope, monkeypatch, saved_only):
     from misaka.core.network.todo import TodoPart
-    from misaka.core.platform import cards, tasks
+    from misaka.core.platform import tasks
     from misaka.core.research.bundle import _Index, consulted_in_session
 
     saved = scope / 'downloads/page.md'
@@ -94,7 +96,7 @@ async def test_partial_success_keeps_card_artifact_and_research_source(web_sessi
         {'content': '', 'error': 'timeout'},
     ]})
     con = tasks.connect(str(scope / 'board.db'))
-    tid = cards.create(con, str(scope), 'Fixture research card', '## deliverable\nreport.md\n', '10032')
+    tid = contract_card(con, str(scope), 'Fixture research card', '## deliverable\nreport.md\n', '10032')
     con.execute("UPDATE tasks SET status='running', claim_lock='fixture', output_dir=? WHERE id=?",
                 (str(scope / 'outputs'), tid))
     row = tasks.get(con, tid)

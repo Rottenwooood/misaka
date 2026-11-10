@@ -331,7 +331,7 @@ class _Collector:
         sessions = [row["session_file"] for row in self.con.execute(
             "SELECT session_file FROM task_runs WHERE task_id=? AND session_file IS NOT NULL ORDER BY started_at",
             (task["id"],))]
-        current = self.con.execute("SELECT session_file FROM tasks WHERE id=?", (task["id"],)).fetchone()
+        current = self.con.execute("SELECT session_file FROM card_state WHERE id=?", (task["id"],)).fetchone()
         if current and current["session_file"]:
             sessions.append(current["session_file"])
         for session_file in dict.fromkeys(sessions):

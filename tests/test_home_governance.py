@@ -16,6 +16,7 @@ import pytest
 
 from misaka.config import CFG, current_config, home
 from tests import posix
+from tests.factories import execution_card
 
 PACKAGE = Path(__file__).resolve().parents[1] / "misaka"
 # Shipped skill assets and vendored upstream code are not MISAKA's own source.
@@ -216,7 +217,7 @@ def test_the_board_stores_session_pointers_relative_and_reads_them_back_as_paths
     monkeypatch.setenv(home.ENV_HOME, str(tmp_path / "home"))
     con = tasks.connect(CFG["db"])
     try:
-        card = tasks.create_task(con, "a card", "body", "10032", workspace=str(tmp_path / "project"))
+        card = execution_card(con, "a card", "body", "10032", workspace=str(tmp_path / "project"))
         session = home.path("sessions") / "cards" / card / "one.jsonl"
         assert tasks.set_runtime(con, card, "agent-1", str(session))
         row = tasks.get(con, card)
@@ -230,7 +231,7 @@ def test_the_board_stores_session_pointers_relative_and_reads_them_back_as_paths
     # On disk there is no trace of where the home was.
     raw = sqlite3.connect(CFG["db"])
     try:
-        stored = raw.execute("SELECT session_file, session_dir FROM tasks WHERE id=?", (card,)).fetchone()
+        stored = raw.execute("SELECT session_file, session_dir FROM card_state WHERE id=?", (card,)).fetchone()
         assert stored == (home.stored(session), home.stored(session.parent))
         assert raw.execute("SELECT session_file FROM task_runs WHERE task_id=?", (card,)).fetchone() == (home.stored(session),)
         dump = "\n".join(str(value) for table, in raw.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -302,7 +303,7 @@ def test_a_board_written_by_another_build_is_refused_by_version_and_left_alone(t
     raw.execute("UPDATE schema_migrations SET version=version-1 WHERE component='tasks'")
     raw.commit()
     raw.close()
-    with pytest.raises(RuntimeError, match=f"pre-release MISAKA .v{tasks.TASK_SCHEMA_VERSION - 1}"):
+    with pytest.raises(RuntimeError, match=f"incompatible tasks format v{tasks.TASK_SCHEMA_VERSION - 1}"):
         tasks.connect(CFG["db"])
     raw = sqlite3.connect(CFG["db"])                                                # nothing was reshaped
     assert raw.execute("SELECT version FROM schema_migrations WHERE component='tasks'").fetchone()[0] == tasks.TASK_SCHEMA_VERSION - 1
@@ -310,14 +311,14 @@ def test_a_board_written_by_another_build_is_refused_by_version_and_left_alone(t
     raw.execute("UPDATE schema_migrations SET version=? WHERE component='tasks'", (tasks.TASK_SCHEMA_VERSION + 1,))
     raw.commit()
     raw.close()
-    with pytest.raises(RuntimeError, match=f"newer MISAKA .v{tasks.TASK_SCHEMA_VERSION + 1}.*misaka update"):
+    with pytest.raises(RuntimeError, match=f"incompatible tasks format v{tasks.TASK_SCHEMA_VERSION + 1}"):
         tasks.connect(CFG["db"])
 
     # A populated board with no marker at all is another build's too.
     other = tmp_path / "unmarked.db"
     raw = sqlite3.connect(other)
     raw.executescript(tasks.SCHEMA)
-    raw.execute("INSERT INTO tasks (id,title,assignee,workspace,created_at) VALUES ('t_1','x','10032','/p',1)")
+    raw.execute("INSERT INTO tasks (id,request_id,instance_id,title,workspace,created_at) VALUES ('t_1','missing','missing','x','/p',1)")
     raw.commit()
     raw.close()
     with pytest.raises(RuntimeError, match="no version marker"):

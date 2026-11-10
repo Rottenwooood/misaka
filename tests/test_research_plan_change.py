@@ -5,6 +5,7 @@ node, and the Sisters created after the plan was read were never given a card. W
 research cards run, `misaka_research_cards` now records cards to add, unstarted cards to give to
 another Sister and unstarted cards to cancel; it is checked as a plan's tasks are, and the driver
 applies it at its next look at the cards."""
+
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ import pytest
 
 from misaka.core.platform import repo, tasks
 from misaka.core.research import commands, planner, runs, workflow
+from tests.factories import research_run
 
 ROSTER = [{"id": "10032"}, {"id": "10043"}, {"id": "10077"}]
 
@@ -28,7 +30,7 @@ def executing(tmp_path, monkeypatch):
     monkeypatch.setattr(repo, "enabled", lambda *a, **k: False)
     monkeypatch.setattr(tasks, "task_state_dir", lambda tid: str(tmp_path / "task-state" / tid))
     con = tasks.connect(str(tmp_path / "board.db"))
-    run = runs.create(con, workspace=str(tmp_path), question="How was the salt monopoly run?")
+    run = research_run(con, workspace=str(tmp_path), question="How was the salt monopoly run?")
     root = runs.nodes(con, run["id"])[0]
     assert runs.acquire_driver(con, run["id"], "driver")
     runs.prepare_runner(con, "research_branches", root["id"])

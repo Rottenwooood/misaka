@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 import secrets
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -18,7 +18,7 @@ from misaka.config.identity import (
 )
 from misaka.core.network import validate
 from misaka.core.network.sister_runtime import SisterRuntime
-from misaka.core.platform import budget, toolkit
+from misaka.core.platform import budget, toolkit, work
 from misaka.core.platform import tasks as db
 from misaka.core.platform.prompt_guard import untrusted
 from misaka.core.research.tool_policy import DRIVER_OWNED_TOOLS
@@ -68,10 +68,10 @@ def _session_line(ctx, limit=10):
 
 
 def _card_log(workspace, task_id, author, text):
-    """Append to the card file's ## log; a stray index row without a file must not fail the tool."""
+    """Record a note in the canonical event log."""
     from misaka.core.platform import cards as card_files
     try:
-        card_files.append_log(workspace, task_id, author, text)
+        card_files.append_log(_con(), task_id, author, text)
     except OSError:
         pass
 
@@ -222,7 +222,7 @@ def _install(harn, runtime):
         rows = card_files.board(con, workspace)
         if params.status:
             rows = [r for r in rows if r["status"] == params.status]
-        # `cards.board` puts index rows with no card file last, so a bare `[-40:]` on a
+        # Keep this board result bounded.
         # project with more than 40 cards keeps exactly the strays and drops every real
         # card without saying so. Truncation stays (the tool result is model context),
         # but it is named, and the count is the pre-truncation one.
@@ -255,10 +255,27 @@ def _install(harn, runtime):
         return _text(header + ("\n".join(lines) if lines else "(no task cards)"))
 
 
+    class StateParams(BaseModel):
+        action: Literal["show", "apply"] = "show"
+        operations: list[dict[str, Any]] | None = Field(None, description=
+            "Atomic operation list. template.create: id, role(last-order|sister), config; "
+            "template.revise: id, expected_revision, config; instance.create: id, template_id, template_revision, optional overrides/label; "
+            "request.create: id, title, workspace, owner_id, optional body; request.update: id, expected_revision, optional title/body/owner_id; "
+            "plan.update: request_id, expected_revision, cards. Each new card: id(t_ + six hex), title, body with ## acceptance criteria, instance_id, needs[]. "
+            "Existing ready/todo/held cards may change these fields or cancel:true. Running/completed work needs lifecycle handling or follow-up cards.")
+
+    @_register(harn, name="misaka_state", label="Work state",
+               description="Inspect templates, instances and requests, or atomically edit them and card DAGs. Plan edits require expected_revision; this never starts models.",
+               parameters=StateParams)
+    async def misaka_state(tool_call_id, params, signal, on_update, ctx):
+        result = work.state(_con()) if params.action == "show" else work.apply(_con(), params.operations)
+        return _text(json.dumps(result,ensure_ascii=False))
+
     class CardParams(BaseModel):
         title: str = Field(description="Short task-card title.")
         body: str = Field(description="Task contract: `## goal`, `## boundaries`, and a required, testable `## acceptance criteria` section.")
-        assignee: str = Field(description="A Sister ID or an ally from the `misaka_board` roster.")
+        request_id: str = Field(description="Owning work request identity from misaka_state.")
+        instance_id: str = Field(description="Sister instance identity from misaka_state.")
         reviewer: str | None = Field(
             None, description="Optional independent reviewer; must be a different Sister from the assignee."
         )
@@ -281,21 +298,21 @@ def _install(harn, runtime):
         parameters=CardParams)
     async def misaka_card(tool_call_id, params, signal, on_update, ctx):
         con = _con()
-        from misaka.core.network import roster as roster_mod
+        executor = work.instance(con, params.instance_id)
         cards, errs = validate.validate_cards(
-            [{"title": params.title, "body": params.body, "assignee": params.assignee,
+            [{"title": params.title, "body": params.body, "assignee": executor["template_id"],
               "priority": params.priority, "model": params.model}],
-            roster_mod.executors())
+            {executor["template_id"]})
         if errs:
             raise ValueError(';'.join(errs))
         if params.reviewer and params.reviewer not in set(_sisters()):
             raise ValueError(f"Reviewer {params.reviewer} is not in the Sister roster.")
-        if params.reviewer == params.assignee:
+        if params.reviewer == executor["template_id"]:
             raise ValueError("The reviewer must be different from the assignee.")
         c = cards[0]
         from misaka.core.platform import cards as card_files
-        tid = card_files.create(con, _workspace(ctx), c["title"], c["body"], c["assignee"],
-                                model=c["model"], priority=c["priority"],
+        tid = card_files.create(con, _workspace(ctx), c["title"], c["body"], params.instance_id,
+                                request_id=params.request_id, model=c["model"], priority=c["priority"],
                                 reviewer=params.reviewer, origin_session=_session_id(ctx))
         review = f" → reviewer {params.reviewer}" if params.reviewer else ""
         return _text(
@@ -889,7 +906,7 @@ def _install(harn, runtime):
             raise ValueError(f"Task card not found: {params.task_id}")
         from misaka.core.platform import cards as card_files
         try:
-            lines = card_files.read_log(row["workspace"], params.task_id)
+            lines = card_files.read_log(_con(), params.task_id)
         except OSError:
             lines = []
         _require_project_tasks(ctx, params)
@@ -915,7 +932,7 @@ def _install(harn, runtime):
         if row is None:
             raise ValueError(f"Task card not found: {params.task_id}")
         from misaka.core.platform import cards as card_files
-        rel = await asyncio.to_thread(card_files.attach, row["workspace"], params.task_id, params.path)
+        rel = await asyncio.to_thread(card_files.attach, _con(), row["workspace"], params.task_id, params.path)
         return _text(f"Attached {rel} to card {params.task_id} (a file in the project repository).")
 
 
@@ -934,7 +951,7 @@ def _install(harn, runtime):
         if row is None:
             raise ValueError(f"Task card not found: {params.task_id}")
         from misaka.core.platform import cards as card_files
-        card_files.attach_url(row["workspace"], params.task_id, params.url)
+        card_files.attach_url(_con(), params.task_id, params.url)
         return _text(f"Attached reference URL to card {params.task_id}.")
 
 
@@ -952,7 +969,7 @@ def _install(harn, runtime):
         if row is None:
             raise ValueError(f"Task card not found: {params.task_id}")
         from misaka.core.platform import cards as card_files
-        items = card_files.attachment_list(row["workspace"], params.task_id)
+        items = card_files.attachment_list(_con(), row["workspace"], params.task_id)
         _require_project_tasks(ctx, params)
         return _text("\n".join(
             f"[{item['kind']}] {item['name']} — {item.get('path') or item.get('source')}"
@@ -1140,7 +1157,7 @@ class NetworkPart:
         if not mine:
             return
         rows = _con().execute(
-            "SELECT id,status,assignee,title FROM tasks WHERE origin_session IN "
+            "SELECT id,status,assignee,title FROM card_state WHERE origin_session IN "
             f"({','.join('?' * len(mine))}) AND workspace=? ORDER BY created_at",
             [*mine, _workspace(ctx)],
         ).fetchall()

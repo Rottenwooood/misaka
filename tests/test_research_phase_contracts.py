@@ -1,6 +1,7 @@
 """What each research phase accepts: forks in a plan, dispositions of a review, the decision after
 a divergence review, the alternatives a divergence card records, the boundary of a node's own
 deliberation, and when a plan must wait for the user. Structure is checked; content never is."""
+
 import os
 import time
 from contextlib import closing
@@ -11,9 +12,10 @@ import pytest
 
 from misaka.core.network import todo, worker
 from misaka.core.network.wiring.collaboration import collaboration_sections
-from misaka.core.platform import cards, tasks
+from misaka.core.platform import tasks
 from misaka.core.research import commands, planner, runs
 from misaka.core.session_manager import SessionManager
+from tests.factories import contract_card, research_run
 
 ROSTER = [{"id": "10032"}, {"id": "10033"}]
 TASK = {"local_id": "a", "title": "A", "question": "Q", "rationale": "R", "deliverable": "a.md",
@@ -68,7 +70,7 @@ def test_mainline_plus_one_new_path_is_a_fork_but_a_single_path_is_not():
 @pytest.fixture
 def node_run(tmp_path):
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
-        run = runs.create(con, workspace=str(tmp_path), question="Why?", limits={"max_depth": 1, "max_revisions": 1})
+        run = research_run(con, workspace=str(tmp_path), question="Why?", limits={"max_depth": 1, "max_revisions": 1})
         assert runs.acquire_driver(con, run["id"], "driver:test")
         yield SimpleNamespace(con=con, run=runs.get(con, run["id"]), root=runs.root(con, run["id"]))
 
@@ -240,7 +242,7 @@ def test_a_re_review_s_deliberation_is_only_what_the_red_team_does_not_hold(tmp_
     re-review goes on in her own conversation) and every conclusion she was given by path."""
     from misaka.core.research import workflow
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
-        run = runs.create(con, workspace=str(tmp_path), question="Why?")
+        run = research_run(con, workspace=str(tmp_path), question="Why?")
         root = runs.root(con, run["id"])
         manager = SessionManager.create(str(tmp_path), str(tmp_path / "s"))
         manager.appendMessage({"role": "user", "content": "go", "timestamp": 1})
@@ -267,9 +269,9 @@ def test_a_re_review_s_deliberation_is_only_what_the_red_team_does_not_hold(tmp_
 
 
 def _running_card(tmp_path, con, monkeypatch, kind):
-    run = runs.create(con, workspace=str(tmp_path), question="Why?")
+    run = research_run(con, workspace=str(tmp_path), question="Why?")
     root = runs.root(con, run["id"])
-    tid = cards.create(con, str(tmp_path), "Review", "## deliverable\nreview.md\n", "10033",
+    tid = contract_card(con, str(tmp_path), "Review", "## deliverable\nreview.md\n", "10033",
                        after_row=lambda tid: runs.link_task(con, run["id"], tid, kind=kind, node=root))
     out = tasks.get(con, tid)["output_dir"]
     con.execute("UPDATE tasks SET status='running', claim_lock='lock1', claim_expires=?, worker_pid=? WHERE id=?",

@@ -1,8 +1,6 @@
 """Task-view process identity and the single launch contract used by CLI and Panel."""
 
-import os
 import sys
-from pathlib import Path
 
 from misaka.config import home
 
@@ -19,12 +17,4 @@ def command(projects):
     argv = [sys.executable, "-m", "misaka", "view", "tasks"]
     for project in projects:
         argv.extend(["--project", project])
-    # A source checkout and its child panes must use the same code.
-    source = str(Path(__file__).resolve().parents[3])
-    env = {
-        "MISAKA_HOME": str(home.home()),
-        "PYTHONPATH": os.pathsep.join(
-            filter(None, [source, os.environ.get("PYTHONPATH")])
-        ),
-    }
-    return argv, env
+    return argv, {"MISAKA_HOME": str(home.home())}

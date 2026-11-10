@@ -10,12 +10,13 @@ import pytest
 
 from misaka.core.platform import tasks
 from misaka.core.research import bundle, planner, runs, window, workflow
+from tests.factories import research_run
 
 
 @pytest.fixture
 def state(tmp_path, monkeypatch):
     con = tasks.connect(str(tmp_path / "board.db"))
-    run = runs.create(
+    run = research_run(
         con,
         workspace=str(tmp_path),
         question="fixture question",

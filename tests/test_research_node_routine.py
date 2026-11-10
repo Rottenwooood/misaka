@@ -5,6 +5,7 @@ again on the same card, continued in her own conversation; the review loop ends 
 alternatives on a card of their own, and the node's decision turns proposals into options, which
 open as nodes only when the root reconciles the level. The model turns are scripted; everything
 the driver records is real."""
+
 import hashlib
 import json
 import re
@@ -14,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from misaka.core.platform import cards, repo, tasks
+from misaka.core.platform import repo, tasks
 from misaka.core.research import (
     commands,
     context,
@@ -25,6 +26,7 @@ from misaka.core.research import (
     workflow,
 )
 from misaka.core.session_manager import SessionManager
+from tests.factories import contract_card, research_run
 
 RED, RESEARCHER = "10033", "10032"
 
@@ -35,7 +37,7 @@ def lab(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks, "task_state_dir", lambda tid: str(tmp_path / "state" / tid))
     monkeypatch.setattr(workflow, "_bundle", lambda *a, **k: None)
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
-        run = runs.create(con, workspace=str(tmp_path), question="Why did the reform fail?",
+        run = research_run(con, workspace=str(tmp_path), question="Why did the reform fail?",
                           limits={"max_depth": 1, "max_revisions": 1, "max_followups": 0, "plan_approval": False})
         assert runs.acquire_driver(con, run["id"], "driver:test")
         run = runs.get(con, run["id"])
@@ -82,7 +84,7 @@ def _script(lab, *, reviews, alternatives, dispositions, decide, cards_failed=No
                 payload["alternatives"] = (alternatives[row["generation"]] if isinstance(alternatives, dict)
                                            else alternatives)
             con.execute("UPDATE tasks SET status='done' WHERE id=?", (row["id"],))
-            cards.set_fields(row["workspace"], row["id"], status="done", generation=row["generation"])   # the file is the contract
+
             tasks.add_event(con, row["id"], "submitted", payload, generation=row["generation"])
         return "done"
 
@@ -418,7 +420,7 @@ def _fail_once(lab, local_id):
         for row in runs.tasks(con, run_id):
             if row["id"] in scope and row["local_id"] == local_id and row["generation"] == 1 and row["status"] != "failed":
                 con.execute("UPDATE tasks SET status='failed' WHERE id=?", (row["id"],))
-                cards.set_fields(row["workspace"], row["id"], status="failed", generation=1)
+
                 tasks.add_event(con, row["id"], "failed", {"reason": "Error code: 502 - Upstream access forbidden"},
                                 generation=1)
                 if scope - {row["id"]}:
@@ -562,7 +564,7 @@ async def test_a_gap_is_filled_inside_the_node_that_left_it_and_never_handed_dow
                                            {"label": "structural limits", "premise": "s"}])
     runs.prepare_runner(con, "research_branches", root["id"])
     root = runs.node(con, root["id"])
-    red, review = (cards.create(con, run["workspace"], title, f"## deliverable\n{name}\n", RED, after_row=lambda tid, kind=kind:
+    red, review = (contract_card(con, run["workspace"], title, f"## deliverable\n{name}\n", RED, after_row=lambda tid, kind=kind:
                                 runs.link_task(con, run["id"], tid, kind=kind, node=root, local_id=f"@{kind}"))
                    for title, name, kind in (("Red team", "critique.md", "red_team"), ("Divergence", "divergence.md", "divergence")))
     for tid in (red, review):

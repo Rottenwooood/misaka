@@ -2,6 +2,7 @@
 as its parents, a join confronts the paths it carries, a dissolution of the user's question waits
 for the user, the survey records connections between nodes, and a re-review continues the red
 team's own card in her own conversation."""
+
 import asyncio
 import os
 from contextlib import closing
@@ -12,7 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from misaka.core.network import worker
-from misaka.core.platform import cards, repo, tasks
+from misaka.core.platform import repo, tasks
 from misaka.core.research import (
     commands,
     context,
@@ -23,6 +24,7 @@ from misaka.core.research import (
     workflow,
 )
 from misaka.core.session_manager import SessionManager
+from tests.factories import contract_card, research_run
 
 
 @pytest.fixture
@@ -30,7 +32,7 @@ def lab(tmp_path, monkeypatch):
     monkeypatch.setattr(repo, "enabled", lambda *a: False)
     monkeypatch.setattr(tasks, "task_state_dir", lambda tid: str(tmp_path / "state" / tid))
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
-        run = runs.create(con, workspace=str(tmp_path), question="Why did the reform fail?", limits={"max_depth": 2})
+        run = research_run(con, workspace=str(tmp_path), question="Why did the reform fail?", limits={"max_depth": 2})
         assert runs.acquire_driver(con, run["id"], "driver:test")
         manager = SessionManager.create(str(tmp_path), str(tmp_path / "sessions"))
         manager.appendMessage({"role": "user", "content": "start", "timestamp": 1})
@@ -171,7 +173,7 @@ def _red_card(lab):
     con, run, root = lab.con, lab.run, lab.root
     runs.prepare_runner(con, "research_branches", root["id"])
     root = runs.node(con, root["id"])
-    tid = cards.create(con, run["workspace"], "Red team", "## deliverable\ncritique.md\n", "10033",
+    tid = contract_card(con, run["workspace"], "Red team", "## deliverable\ncritique.md\n", "10033",
                        after_row=lambda tid: runs.link_task(con, run["id"], tid, kind="red_team", node=root, round=1))
     return root, tid
 
@@ -203,10 +205,10 @@ def test_one_red_team_card_keeps_each_round_s_issues_and_files_apart(lab):
 
 def test_a_headless_continuation_claims_a_new_generation_and_the_message_is_the_turn(lab):
     from misaka.core.network import dispatch
-    con, run = lab.con, lab.run
+    con = lab.con
     _root, tid = _red_card(lab)
     con.execute("UPDATE tasks SET status='done' WHERE id=?", (tid,))
-    cards.set_fields(run["workspace"], tid, status="done")
+
     seen = []
     lab.monkeypatch.setattr(dispatch, "_profile_dir", lambda cfg, assignee: str(lab.tmp))
     lab.monkeypatch.setattr(worker, "run_card", lambda task, *a, **k: seen.append(task) or {"settled": True})

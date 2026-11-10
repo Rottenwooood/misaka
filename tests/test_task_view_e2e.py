@@ -1,29 +1,26 @@
-"""External-input acceptance test. Run with the project's Python, no pytest required.
-
-Uses public CLI commands, real files/SQLite, real PTYs, libghostty and the real
-Panel daemon protocol. No mocks of snapshot/layout/runtime implementation.
-The running marker is injected persistence input; no model/worker execution is claimed.
-"""
-
-from __future__ import annotations
+"""Real CLI -> formal state -> PTY -> original Panel acceptance; optional manual mode."""
 
 import base64
-import hashlib
 import json
 import os
-import re
 import select
 import signal
 import socket
-import sqlite3
 import struct
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
-ROOT = Path(__file__).resolve().parents[1]
+from misaka.ui.panel import ghostty, host_input, pane_input
+from misaka.ui.panel.daemon import input_state
+from tests.work_fixture import BODY, B, C, Scenario
+
+if os.name == "posix":
+    import fcntl
+    import termios
+
 FRAMES = []
 CHECKS = []
 
@@ -33,553 +30,371 @@ def check(label):
     print("PASS " + label, flush=True)
 
 
-def digest(roots):
-    return {
-        str(p): hashlib.sha256(p.read_bytes()).hexdigest()
-        for root in roots
-        for p in root.rglob("*")
-        if p.is_file() and not p.name.endswith("-shm")
-    }
+class Terminal:
+    def __init__(self, command, scenario, cols=110, rows=40):
+        self.master, self.slave = os.openpty()
+        fcntl.ioctl(
+            self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0)
+        )
+        self.saved = termios.tcgetattr(self.slave)
+        self.proc = subprocess.Popen(
+            command,
+            cwd=scenario.project,
+            env=scenario.env,
+            stdin=self.slave,
+            stdout=self.slave,
+            stderr=self.slave,
+            start_new_session=True,
+        )
+        os.set_blocking(self.master, False)
+        self.term = ghostty.Terminal(
+            cols, rows, on_write_pty=lambda raw: os.write(self.master, raw)
+        )
+
+    def frame(self, label, needle):
+        deadline = time.monotonic() + 8
+        text = ""
+        while time.monotonic() < deadline:
+            if select.select([self.master], [], [], 0.1)[0]:
+                try:
+                    raw = os.read(self.master, 262144)
+                except BlockingIOError:
+                    continue
+                self.term.write(raw)
+                text = self.term.recent_text(self.term.rows)
+                if needle in text and b"\x1b[?2026l" in raw:
+                    FRAMES.append({"label": label, "text": text})
+                    return text
+            assert self.proc.poll() is None, (self.proc.returncode, text)
+        raise AssertionError((label, needle, text))
+
+    def key(self, value):
+        raw = pane_input.encode_key(
+            host_input.Key(value), input_state(SimpleNamespace(term=self.term))
+        )
+        assert raw
+        os.write(self.master, raw)
+
+    def prefix(self, value):
+        os.write(self.master, b"\x02" + value.encode())
+
+    def mouse(self, kind, x, y):
+        raw = pane_input.encode_mouse(
+            host_input.Mouse(kind, 0, x, y),
+            x,
+            y,
+            input_state(SimpleNamespace(term=self.term)),
+        )
+        assert raw
+        os.write(self.master, raw)
+
+    def resize(self, cols, rows):
+        self.term.resize(cols, rows)
+        fcntl.ioctl(
+            self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0)
+        )
+        os.kill(self.proc.pid, signal.SIGWINCH)
+
+    def close(self):
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            self.proc.wait(timeout=5)
+        assert termios.tcgetattr(self.slave) == self.saved
+        os.close(self.master)
+        os.close(self.slave)
+        self.term.close()
+
+
+class Daemon:
+    def __init__(self, s):
+        self.path = str(s.home / "run" / "net.sock")
+        self.log = (s.base / "daemon.log").open("wb")
+        self.proc = subprocess.Popen(
+            [sys.executable, "-m", "misaka.ui.panel.daemon"],
+            cwd=s.project,
+            env=s.env,
+            stdin=subprocess.DEVNULL,
+            stdout=self.log,
+            stderr=self.log,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                self.rpc("ping")
+                break
+            except OSError:
+                assert time.monotonic() < deadline and self.proc.poll() is None
+                time.sleep(0.05)
+
+    def rpc(self, method, params=None):
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(5)
+            client.connect(self.path)
+            client.sendall(
+                (
+                    json.dumps({"id": 1, "method": method, "params": params or {}})
+                    + "\n"
+                ).encode()
+            )
+            reply = b""
+            while not reply.endswith(b"\n"):
+                chunk = client.recv(1048576)
+                assert chunk
+                reply += chunk
+            result = json.loads(reply)
+            assert not result.get("error"), result
+            return result["result"]
+
+    def close(self):
+        if self.proc.poll() is None:
+            try:
+                self.rpc("server.stop")
+            except OSError:
+                self.proc.terminate()
+            self.proc.wait(timeout=8)
+        self.log.close()
 
 
 def main(report_path=None, *, interactive=False):
     if os.name != "posix":
-        raise SystemExit("PTY acceptance currently requires POSIX.")
-    import fcntl
-    import termios
-    from types import SimpleNamespace
-
-    from misaka.ui.panel import ghostty, host_input, pane_input
-    from misaka.ui.panel.daemon import input_state
-
-    with tempfile.TemporaryDirectory(prefix="mv-") as temp:
-        base = Path(temp)
-        project = base / "P1"
-        other = base / "P2"
-        empty = base / "empty"
-        for p in (project, other, empty):
-            p.mkdir()
-        data_home = base / "home"
-        env = {
-            **os.environ,
-            "MISAKA_HOME": str(data_home),
-            "PYTHONPATH": str(ROOT),
-            "GIT_AUTHOR_NAME": "MISAKA E2E",
-            "GIT_AUTHOR_EMAIL": "test@example.invalid",
-            "GIT_COMMITTER_NAME": "MISAKA E2E",
-            "GIT_COMMITTER_EMAIL": "test@example.invalid",
-        }
-        # No provider credentials are needed by any command below.
-        for key in list(env):
-            if key.endswith(("_API_KEY", "_AUTH_TOKEN")):
-                env.pop(key)
-
-        def cli(*args, cwd=project, code=0):
-            out = subprocess.run(
-                [sys.executable, "-m", "misaka", *args],
-                cwd=cwd,
-                stdin=subprocess.DEVNULL,
-                check=False,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=25,
-            )
-            assert out.returncode == code, (
-                args,
-                out.returncode,
-                out.stdout,
-                out.stderr,
-            )
-            return out.stdout
-
-        def snapshot(*args, code=0):
-            return json.loads(cli("view", "tasks", *args, code=code))
-
-        initial = snapshot("--json", "--project", str(empty))
-        assert not initial["projects"][0]["nodes"]
-        assert not data_home.exists() and not list(empty.iterdir())
-        assert "尚无卡片" in cli(
-            "view", "tasks", "--project", str(empty), "--snapshot", "100", "24"
-        )
-        assert not data_home.exists()
-        check("未初始化目录：空白状态明确，查看不创建 home、卡片或数据库")
-
-        cli("create", "test-sister", "--desc", "offline acceptance")
-        body = "## goal\nTest\n## boundaries\nTemporary project only\n## acceptance criteria\n- A visible output exists.\n"
-
-        def add(title, needs=(), cwd=project):
-            args = ["task", "add", title, "--to", "test-sister", "--body", body]
-            for parent in needs:
-                args.extend(["--needs", parent])
-            out = cli(*args, cwd=cwd)
-            return re.search(r"Added (t_\w+):", out)[1]
-
-        a = add("调查现有接口")
-        b = add("实现中文导出", [a])
-        c = add("编写使用说明", [a])
-        d = add("集成验收", [b, c])
-        e = add("独立交付")
-        f = add("等待外部数据", cwd=other)
-        database = data_home / "state" / "board.db"
-
-        def runtime(tid, **fields):
-            # Simulate the external owner writing its durable runtime state, never call
-            # viewer internals or mock their return values.
-            with sqlite3.connect(database) as con:
-                con.execute(
-                    "UPDATE tasks SET "
-                    + ",".join(k + "=?" for k in fields)
-                    + " WHERE id=?",
-                    [*fields.values(), tid],
-                )
-
-        def replace(tid, old, new, cwd=project):
-            path = cwd / "cards" / (tid + ".md")
-            content = path.read_text()
-            assert old in content, (old, content)
-            pending = path.with_suffix(".tmp")
-            pending.write_text(content.replace(old, new), encoding="utf-8")
-            pending.replace(path)
-
-        replace(a, "status: ready", "status: done")
-        replace(e, "status: ready", "status: done")
-        replace(f, "status: ready", "status: blocked", cwd=other)
-        runtime(a, status="done")
-        runtime(e, status="done")
-        runtime(b, status="running", worker_pid=os.getpid())
-        runtime(f, status="blocked", block_reason="等外部数据")
+        raise SystemExit("Terminal acceptance requires POSIX")
+    s = Scenario()
+    try:
+        assert s.snapshot()["state_status"] == "missing" and not s.home.exists()
+        assert "尚无卡片" in s.cli("view", "tasks", "--snapshot", "100", "24").stdout
+        check("未初始化项目空白状态明确；查看不建立状态库或 home")
+        s.seed()
+        s.demo_states()
         multi = [
             "--project",
-            str(project),
+            str(s.project),
             "--project",
-            str(other),
+            str(s.other),
             "--project",
-            str(empty),
+            str(s.empty),
         ]
-        before = digest([data_home, project, other, empty])
-        data = snapshot("--json", *multi)
-        p1 = next(p for p in data["projects"] if p["name"] == "P1")
-        nodes = {n["id"]: n for n in p1["nodes"]}
-        assert len(p1["groups"]) == 2 and nodes[b]["running"] is True
-        assert set(nodes[d]["needs"]) == {b, c}
-        group = next(g for g in p1["groups"] if d in g["nodes"])
-        assert group["ranks"][a] < group["ranks"][b] < group["ranks"][d]
-        assert len(data["projects"]) == 3
-        cli("view", "tasks", "--snapshot", "110", "40", *multi)
-        after = digest([data_home, project, other, empty])
-        assert after == before, {
-            key: (before.get(key), after.get(key))
-            for key in before.keys() | after.keys()
-            if before.get(key) != after.get(key)
-        }
-        check(
-            "公开 CLI 创建真实卡片：多项目、菱形依赖、完成与受阻状态；读取前后业务文件哈希不变（SQLite 协调共享内存除外）"
-        )
-
-        master, slave = os.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 110, 0, 0))
-        saved = termios.tcgetattr(slave)
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "misaka", "view", "tasks", *multi],
-            cwd=project,
-            env=env,
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            start_new_session=True,
-        )
-        os.set_blocking(master, False)
-        term = ghostty.Terminal(
-            110, 40, on_write_pty=lambda data: os.write(master, data)
-        )
-
-        def frame(label, contains):
-            deadline = time.monotonic() + 7
-            text = ""
-            while time.monotonic() < deadline:
-                if select.select([master], [], [], 0.1)[0]:
-                    try:
-                        raw = os.read(master, 262144)
-                    except BlockingIOError:
-                        continue
-                    term.write(raw)
-                    text = term.recent_text(term.rows)
-                    if contains in text and b"\x1b[?2026l" in raw:
-                        FRAMES.append({"label": label, "text": text})
-                        return text
-                assert proc.poll() is None, ("viewer exited", proc.returncode, text)
-            raise AssertionError((label, contains, text))
-
-        def key(value):
-            raw = pane_input.encode_key(
-                host_input.Key(value), input_state(SimpleNamespace(term=term))
-            )
-            assert raw
-            os.write(master, raw)
-
-        def mouse(kind, x, y):
-            raw = pane_input.encode_mouse(
-                host_input.Mouse(kind, 0, x, y),
-                x,
-                y,
-                input_state(SimpleNamespace(term=term)),
-            )
-            assert raw
-            os.write(master, raw)
-
+        snapshot = s.snapshot(*multi)
+        assert len(snapshot["projects"]) == 3
+        draft = next(p for p in snapshot["projects"] if p["name"] == "empty")
+        assert len(draft["requests"]) == 1 and not draft["nodes"]
+        check("多项目、多个真实请求和未拆分请求均有持久身份")
+        view = Terminal([sys.executable, "-m", "misaka", "view", "tasks", *multi], s)
         try:
-            text = frame("真实卡片初始画布", "实现中文导出")
-            assert "● 执行中" in text
-            assert input_state(SimpleNamespace(term=term))["mouse_encoding"] == "sgr"
-            key("right")
-            frame("方向键平移", "视口 x=6 y=0")
-            mouse("press", 100, 8)
-            mouse("drag", 92, 8)
-            mouse("release", 92, 8)
-            frame("空白鼠标拖动", "视口 x=14 y=0")
-            key("g")
-            frame("回到原点", "视口 x=0 y=0")
-            check("真实 PTY + libghostty：原 Panel 输入编码可操作画布与空白拖动")
+            text = view.frame("真实任务请求与实例", "实现中文导出")
+            assert "req-export" in text and "i-2" in text and "● 执行中" in text
+            view.key("right")
+            view.frame("方向键平移", "视口 x=6 y=0")
+            view.mouse("press", 100, 8)
+            view.mouse("drag", 92, 8)
+            view.mouse("release", 92, 8)
+            view.frame("空白鼠标拖动", "视口 x=14 y=0")
+            check("原 Pane 输入编码经真实 PTY 操作正式请求 DAG")
+            view.key("a")
+            before = view.frame("定位执行中卡片", f"选中 {B}")
+            import re
 
-            key("a")
-            active_frame = frame("定位执行中卡片", f"选中 {b}")
-            viewport = re.search(r"视口 x=\d+ y=\d+", active_frame)[0]
-            runtime(b, status="ready", worker_pid=None)
-            replace(b, "实现中文导出", "导出功能已更新")
-            text = frame("外部文件和运行状态刷新", "导出功能已更新")
+            viewport = re.search(r"视口 x=\d+ y=\d+", before)[0]
+            s.runtime(B, "ready")
+            s.apply(
+                [
+                    {
+                        "op": "plan.update",
+                        "request_id": "req-export",
+                        "expected_revision": 1,
+                        "cards": [{"id": B, "title": "导出功能已更新"}],
+                    }
+                ]
+            )
+            text = view.frame("外部原子命令刷新画布", "导出功能已更新")
+            assert viewport in text and f"选中 {B}" in text and "● 执行中" not in text
+            check("外部状态命令更新后自动刷新，保留选中卡片和视口")
+            s.apply(
+                [
+                    {
+                        "op": "plan.update",
+                        "request_id": "req-export",
+                        "expected_revision": 2,
+                        "cards": [
+                            {"id": C, "needs": []},
+                            {
+                                "id": "t_777777",
+                                "title": "同一请求的独立工作",
+                                "body": BODY,
+                                "instance_id": "i-3",
+                                "needs": [],
+                            },
+                        ],
+                    }
+                ]
+            )
+            view.key("g")
+            view.frame("原请求内修改依赖并新增独立节点", "/ v3 /")
+            data = s.snapshot()
+            assert len(data["projects"][0]["requests"]) == 2
+            assert (
+                "t_777777"
+                in next(
+                    r
+                    for r in data["projects"][0]["requests"]
+                    if r["id"] == "req-export"
+                )["nodes"]
+            )
+            check("图的分组由请求身份决定；取消依赖不会拆成另一项任务")
+            s.cli("task", "export", B)
+            exported = s.project / "cards" / (B + ".md")
+            exported.write_text("not a card")
+            assert s.snapshot() == data
+            exported.unlink()
+            check("坏 Markdown 导出不改变状态，也不影响画布")
+            backup = s.database.with_suffix(".saved")
+            s.database.rename(backup)
+            s.database.write_text("bad database")
+            text = view.frame("状态库故障保留旧快照", "状态库暂不可用")
             assert "● 执行中" not in text
-            assert f"选中 {b}" in text and viewport in text
-            check("运行中自动刷新外部文件与 SQLite；选中卡片保持不变")
-
-            # Make dependencies editable externally while the viewer is already open.
-            path = project / "cards" / (b + ".md")
-            original_b = path.read_text()
-            replace(b, f"- {a}", "- t_missing")
-            frame("外部依赖变更", "缺少依赖")
-            missing = snapshot("--json", code=1)
-            assert next(n for n in missing["projects"][0]["nodes"] if n["id"] == b)[
-                "missing_needs"
-            ] == ["t_missing"]
-            path.write_text(original_b)
-            frame("依赖恢复", f"选中 {b} / 导出功能已更新 / 待处理")
-            path.write_text("---\nid: [broken\n---\n")
-            text = frame("坏文件保留旧快照", "卡片读取失败")
-            assert "导出功能已更新" in text and "卡片读取失败" in text
-            path.write_text(original_b)
-            frame("坏文件修复恢复", f"选中 {b} / 导出功能已更新 / 待处理")
-            check("外部修改依赖即时生效；坏卡片可见且保留旧快照，修复后恢复")
-
-            # A database read failure must not retain an old running marker.
-            db_backup = database.with_suffix(".saved")
-            database.rename(db_backup)
-            database.write_text("not a database")
-            frame("运行索引故障", "运行索引读取失败")
-            error = snapshot("--json", code=1)
-            assert error["runtime_state"] == "error"
-            assert all(
-                n["running"] is None for p in error["projects"] for n in p["nodes"]
-            )
-            database.unlink()
-            db_backup.rename(database)
-            key("g")
-            frame("索引恢复", "视口 x=0 y=0")
-            check("索引故障显示未知执行状态；修复后继续刷新")
-
-            # Resize a running viewer through the actual terminal interface.
-            term.resize(61, 22)
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 22, 61, 0, 0))
-            os.kill(proc.pid, signal.SIGWINCH)
-            text = frame("中文窄窗口", "61x22")
+            data = s.snapshot(code=1)
+            assert data["state_status"] == "error"
+            s.database.unlink()
+            backup.rename(s.database)
+            view.key("g")
+            view.frame("状态库恢复", "异常 0")
+            check("数据库故障显示旧快照与未知执行状态；修复后恢复")
+            view.resize(61, 22)
+            text = view.frame("中文窄窗口", "61x22")
             assert "\ufffd" not in text
-            term.resize(130, 44)
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 44, 130, 0, 0))
-            os.kill(proc.pid, signal.SIGWINCH)
-            frame("恢复大窗口", "130x44")
-            before_quit = digest([data_home, project, other, empty])
-            key("q")
-            assert proc.wait(timeout=4) == 0
-            assert termios.tcgetattr(slave) == saved
-            assert digest([data_home, project, other, empty]) == before_quit
-            check("PTY resize、中文渲染及 q 退出；退出恢复 termios 且不修改任务数据")
+            view.resize(130, 44)
+            view.frame("恢复大窗口", "130x44")
+            view.key("q")
+            assert view.proc.wait(timeout=5) == 0
+            check("中文窗口缩放和正常退出，恢复终端属性")
         finally:
-            if proc.poll() is None:
-                proc.terminate()
-                proc.wait(timeout=4)
-            term.close()
-            os.close(master)
-            os.close(slave)
-
-        # A normal external termination must restore raw mode as well.
-        master, slave = os.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-        saved = termios.tcgetattr(slave)
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "misaka", "view", "tasks"],
-            cwd=project,
-            env=env,
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            start_new_session=True,
-        )
-        os.set_blocking(master, False)
-        term = ghostty.Terminal(100, 24)
-        try:
-            frame("外部终止前", "任务画布")
-            proc.terminate()
-            assert proc.wait(timeout=4) == 128 + signal.SIGTERM
-            assert termios.tcgetattr(slave) == saved
-            check("外部 SIGTERM 退出也恢复终端属性")
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait(timeout=4)
-            term.close()
-            os.close(master)
-            os.close(slave)
-
-        # Invalid graph diagnostics are tested through the CLI, not graph helpers.
-        replace(a, "status: done", f"status: done\nneeds:\n- {d}")
-        data = snapshot("--json", code=1)
-        assert any(g["cycle_or_downstream"] for g in data["projects"][0]["groups"])
-        replace(a, f"status: done\nneeds:\n- {d}", "status: done")
-        replace(b, "generation: 1", "generation: 2")
-        data = snapshot("--json", code=1)
+            view.close()
+        s.execute("UPDATE tasks SET status='done'")
+        assert "全部完成" in s.cli("view", "tasks", "--snapshot", "110", "40").stdout
         assert (
-            next(n for n in data["projects"][0]["nodes"] if n["id"] == b)["running"]
-            is None
+            "尚未拆分"
+            in s.cli(
+                "view", "tasks", "--project", str(s.empty), "--snapshot", "110", "24"
+            ).stdout
         )
-        replace(b, "generation: 2", "generation: 1")
-        check("环及其下游有明确诊断；文件/索引代次不一致不显示执行中")
-
-        for path in project.glob("cards/t_*.md"):
-            text = path.read_text()
-            text = re.sub(r"^status: \w+", "status: done", text, flags=re.MULTILINE)
-            path.write_text(text)
-        completed = cli("view", "tasks", "--snapshot", "110", "40")
-        assert "全部完成" in completed
-        check("整组完成后保留可查看的任务树")
-
-        # The existing daemon actually hosts our child program: no replacement panel.
-        # An absent daemon must not be started implicitly by --pane.
-        cli("view", "tasks", "--pane", code=1)
-        assert not (data_home / "run" / "net.sock").exists()
-        daemon_log = (base / "daemon.log").open("wb")
-        daemon = subprocess.Popen(
-            [sys.executable, "-m", "misaka.ui.panel.daemon"],
-            cwd=ROOT,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=daemon_log,
-            stderr=daemon_log,
-            start_new_session=True,
-        )
-        sock_path = str(data_home / "run" / "net.sock")
-
-        def rpc(method, params=None):
-            with socket.socket(socket.AF_UNIX) as client:
-                client.settimeout(5)
-                client.connect(sock_path)
-                client.sendall(
-                    (
-                        json.dumps({"id": 1, "method": method, "params": params or {}})
-                        + "\n"
-                    ).encode()
-                )
-                reply = b""
-                while not reply.endswith(b"\n"):
-                    chunk = client.recv(1048576)
-                    assert chunk, (method, reply)
-                    reply += chunk
-                out = json.loads(reply)
-                assert not out.get("error"), out
-                return out["result"]
-
+        check("完成后任务图保留；未拆分请求不会误显示为全部完成")
+        s.cli("view", "tasks", "--pane", code=1)
+        daemon = Daemon(s)
         try:
-            deadline = time.monotonic() + 12
-            while True:
-                try:
-                    rpc("ping")
-                    break
-                except OSError:
-                    assert time.monotonic() < deadline and daemon.poll() is None
-                    time.sleep(0.1)
-            pane = json.loads(cli("view", "tasks", "--pane", *multi))["pane_id"]
-            rpc("pane.resize", {"id": pane, "rows": 40, "cols": 110})
+            pane = json.loads(s.cli("view", "tasks", "--pane", *multi).stdout)[
+                "pane_id"
+            ]
+            daemon.rpc("pane.resize", {"id": pane, "rows": 40, "cols": 110})
             deadline = time.monotonic() + 8
-            while True:
-                screen = rpc("pane.read", {"id": pane, "strip": True})
-                if "任务画布" in screen["text"] and "导出功能已更新" in screen["text"]:
-                    break
-                assert time.monotonic() < deadline, screen
-                time.sleep(0.1)
-            panes = rpc("panes.list")["panes"]
-            entry = next(p for p in panes if p["id"] == pane)
-            assert not entry.get("card") and entry["alive"]
-            rpc("pane.input", {"id": pane, "data": base64.b64encode(b"q").decode()})
-            deadline = time.monotonic() + 4
-            while rpc("pane.read", {"id": pane})["alive"]:
+            while (
+                "任务画布"
+                not in daemon.rpc("pane.read", {"id": pane, "strip": True})["text"]
+            ):
                 assert time.monotonic() < deadline
-                time.sleep(0.1)
-            rpc("ping")
-            check(
-                "真实原 Panel daemon 托管 --pane，接收输入并退出；查看器不占用 card，退出不关闭 daemon"
+                time.sleep(0.05)
+            daemon.rpc(
+                "pane.input", {"id": pane, "data": base64.b64encode(b"q").decode()}
             )
-
-            # Launch the actual outer Panel client. The Last Order pane is an external
-            # terminal fixture: no agent loop or model response is mocked inside Panel.
-            lo = rpc(
+            deadline = time.monotonic() + 5
+            while daemon.rpc("pane.read", {"id": pane})["alive"]:
+                assert time.monotonic() < deadline
+                time.sleep(0.05)
+            lo = daemon.rpc(
                 "pane.create",
                 {
                     "argv": [
                         sys.executable,
                         "-u",
                         "-c",
-                        "import signal; print('LO EXTERNAL FIXTURE', flush=True); signal.pause()",
+                        "import signal; print('LO EXTERNAL FIXTURE',flush=True); signal.pause()",
                     ],
-                    "cwd": str(project),
+                    "cwd": str(s.project),
                     "title": "Last Order",
                 },
             )["pane_id"]
             if interactive:
-                for tid in (b, c, d):
-                    replace(tid, "status: done", "status: todo")
-                    runtime(tid, status="todo")
-                runtime(b, status="running")
+                s.runtime(B, "running")
                 print(
-                    "交互验证：Ctrl+B 后按 t 打开画布；q 关闭画布；Ctrl+B 后按 d 退出并清理。",
+                    "交互验证：Ctrl+B 后按 t 开图；q 关图；Ctrl+B 后按 d 退出清理。测试窗格不调用模型。",
                     flush=True,
-                )
-                print(
-                    "临时项目与测试会话；执行中标记为模拟数据，不请求模型。", flush=True
                 )
                 result = subprocess.run(
                     [sys.executable, "-m", "misaka", "panel"],
-                    cwd=project,
-                    env={**env, "MISAKA_ALLOW_NESTED": "1"},
+                    cwd=s.project,
+                    env=s.env,
                     check=False,
                 )
                 if result.returncode:
                     raise SystemExit(result.returncode)
                 return
-
-            master, slave = os.openpty()
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 44, 140, 0, 0))
-            saved = termios.tcgetattr(slave)
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "misaka", "panel"],
-                cwd=project,
-                env={**env, "MISAKA_ALLOW_NESTED": "1"},
-                stdin=slave,
-                stdout=slave,
-                stderr=slave,
-                start_new_session=True,
-            )
-            os.set_blocking(master, False)
-            term = ghostty.Terminal(
-                140, 44, on_write_pty=lambda raw: os.write(master, raw)
-            )
+            panel = Terminal([sys.executable, "-m", "misaka", "panel"], s, 140, 44)
             try:
-                frame("完整 Panel 客户端启动", "LO EXTERNAL FIXTURE")
-                os.write(master, b"\x02t")
-                text = frame("Panel 快捷键打开任务 tab", "任务画布")
-                assert "导出功能已更新" in text
-                assert "agents" in text and "Last Order" in text
-                current = [
-                    p
-                    for p in rpc("panes.list")["panes"]
-                    if p["alive"] and "view" in p["argv"]
-                ]
-                assert len(current) == 1 and not current[0]["busy"]
-                task_pane = current[0]["id"]
-                # Only the tab/chrome names the viewer; it is not an agent sidebar row.
-                sidebar_text = "\n".join(line[:24] for line in text.splitlines())
-                assert "Tasks" not in sidebar_text
-                os.write(master, b"\x02t")
-                # Use the next forwarded key as a synchronization barrier.
-                key("right")
-                frame("Panel 输入转发到画布", "视口 x=6 y=0")
+                panel.frame("完整 Panel 启动", "LO EXTERNAL FIXTURE")
+                panel.prefix("t")
+                text = panel.frame("Panel 内打开正式任务 DAG", "任务画布")
+                assert "req-export" in text
+                sidebar = "\n".join(line[:24] for line in text.splitlines())
+                assert "Tasks" not in sidebar
+                panel.prefix("t")
+                panel.key("right")
+                panel.frame("复用现有画布与按键转发", "视口 x=6 y=0")
                 assert (
                     len(
                         [
                             p
-                            for p in rpc("panes.list")["panes"]
+                            for p in daemon.rpc("panes.list")["panes"]
                             if p["alive"] and "view" in p["argv"]
                         ]
                     )
                     == 1
                 )
-                os.write(master, b"\x021")
-                frame("切回原 Last Order tab", "LO EXTERNAL FIXTURE")
-                os.write(master, b"\x02t")
-                frame("再次聚焦现有画布", "视口 x=6 y=0")
-                # Mouse passes through the actual outer client before reaching the canvas.
-                # Blank area near the right edge avoids chrome, sidebar and task nodes.
-                mouse("press", 128, 10)
-                mouse("drag", 120, 10)
-                mouse("release", 120, 10)
-                frame("完整 Panel 鼠标拖动画布", "视口 x=14 y=0")
-                key("q")
-                frame("关闭画布保留原会话", "LO EXTERNAL FIXTURE")
-                assert rpc("pane.read", {"id": lo})["alive"]
-                assert not any(
-                    p["id"] == task_pane and p["alive"]
-                    for p in rpc("panes.list")["panes"]
-                )
+                panel.prefix("1")
+                panel.frame("切回原窗格", "LO EXTERNAL FIXTURE")
+                panel.prefix("t")
+                panel.frame("重新聚焦任务", "视口 x=6 y=0")
+                panel.mouse("press", 128, 36)
+                panel.mouse("drag", 120, 36)
+                panel.mouse("release", 120, 36)
+                panel.frame("完整 Panel 鼠标转发", "视口 x=14 y=0")
+                panel.key("q")
+                panel.frame("关闭画布保留原窗格", "LO EXTERNAL FIXTURE")
+                assert daemon.rpc("pane.read", {"id": lo})["alive"]
+                panel.prefix("d")
+                assert panel.proc.wait(timeout=8) == 0
                 check(
-                    "完整 Panel 客户端：快捷键开图、重复聚焦、切回会话、按键与鼠标转发；查看器不列为 Agent，关闭不结束原会话"
+                    "完整原 Panel：开图、重复聚焦、切换、键鼠转发、关闭；查看器不列为 Agent"
                 )
-                os.write(master, b"\x02d")
-                assert proc.wait(timeout=8) == 0
-                assert termios.tcgetattr(slave) == saved
             finally:
-                if proc.poll() is None:
-                    proc.terminate()
-                    proc.wait(timeout=4)
-                term.close()
-                os.close(master)
-                os.close(slave)
+                panel.close()
         finally:
-            try:
-                rpc("server.stop")
-            except (OSError, AssertionError):
-                if daemon.poll() is None:
-                    daemon.terminate()
-            daemon.wait(timeout=8)
-            daemon_log.close()
-
-    result = {
-        "passed": len(CHECKS),
-        "checks": CHECKS,
-        "frames": FRAMES,
-        "scope": "CLI + external files/SQLite + real PTY + libghostty + original Panel daemon and full client; no model execution",
-    }
-    if report_path:
-        Path(report_path).write_text(json.dumps(result, ensure_ascii=False, indent=2))
-    print(
-        json.dumps(
-            {"passed": len(CHECKS), "scope": result["scope"]}, ensure_ascii=False
-        )
-    )
+            daemon.close()
+        result = {
+            "passed": len(CHECKS),
+            "checks": CHECKS,
+            "frames": FRAMES,
+            "scope": "formal SQL state -> real CLI/PTY/libghostty -> original Panel daemon and full client; no models",
+        }
+        if report_path:
+            Path(report_path).write_text(
+                json.dumps(result, ensure_ascii=False, indent=2)
+            )
+        print(json.dumps({"passed": len(CHECKS)}, ensure_ascii=False))
+    finally:
+        s.close()
 
 
 def test_external_task_view():
     import pytest
 
-    from misaka.ui.panel import ghostty
-
-    if os.name != "posix":
-        pytest.skip("PTY acceptance requires POSIX")
-    if reason := ghostty.unavailable():
-        pytest.skip(reason)
+    if os.name != "posix" or ghostty.unavailable():
+        pytest.skip("Requires POSIX and libghostty")
     main()
 
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--interactive"]:
         if not sys.stdin.isatty() or not sys.stdout.isatty():
-            raise SystemExit("--interactive 需要在真实终端中运行。")
+            raise SystemExit("Interactive mode requires a terminal")
         main(interactive=True)
     else:
         main(sys.argv[1] if len(sys.argv) > 1 else None)

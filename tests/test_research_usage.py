@@ -2,6 +2,7 @@
 
 Spending could not be seen anywhere: the board's ledger keeps a token total per turn, and the
 price of each call is on its message in the session file, where nothing added it up."""
+
 import json
 from contextlib import closing
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ import pytest
 from misaka.config import sessions
 from misaka.core.platform import repo, tasks
 from misaka.core.research import runs, usage
+from tests.factories import execution_card, research_run
 
 
 def _call(model, tokens, cost, at_ms):
@@ -33,7 +35,7 @@ def spent_run(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions, "sessions_root", lambda: str(tmp_path / "sessions"))
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
         runs.init(con)
-        run = runs.create(con, workspace=str(tmp_path), question="How was the salt monopoly run?")
+        run = research_run(con, workspace=str(tmp_path), question="How was the salt monopoly run?")
         started = run["created_at"] * 1000
         window = _session(tmp_path / "sessions" / "last-order" / "window.jsonl",
                           {"type": "session"},
@@ -45,7 +47,7 @@ def spent_run(tmp_path, monkeypatch):
             child = runs.create_node(con, run["id"], question="Who bought the licences?", parents=[root["id"]])
         _session(tmp_path / "sessions" / "research" / f"{run['id']}--node-{child['id']}" / "a.jsonl",
                  _call("big", 200, 2.0, started + 2000), {"type": "message", "message": {"role": "user"}})
-        tid = tasks.create_task(con, "licences", assignee="10032", workspace=str(tmp_path))
+        tid = execution_card(con, "licences", assignee="10032", workspace=str(tmp_path))
         runs.link_task(con, run["id"], tid, kind="research", node=root, local_id="licences")
         card = tmp_path / "sessions" / "cards" / tid
         _session(card / "first.jsonl", _call("small", 50, 0.25, started + 3000))
@@ -85,8 +87,8 @@ def test_a_window_is_charged_to_a_run_only_until_it_ended_or_the_next_run_began(
     monkeypatch.setattr(sessions, "sessions_root", lambda: str(tmp_path / "sessions"))
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
         runs.init(con)
-        first = runs.create(con, workspace=str(tmp_path), question="Run A")
-        second = runs.create(con, workspace=str(tmp_path), question="Run B")
+        first = research_run(con, workspace=str(tmp_path), question="Run A")
+        second = research_run(con, workspace=str(tmp_path), question="Run B")
         window = _session(tmp_path / "sessions" / "last-order" / "window.jsonl",
                           _call("big", 100, 1.0, 1_050_000),      # run A, before it stopped
                           _call("big", 300, 3.0, 2_000_000),      # unrelated talk after it stopped
@@ -108,7 +110,7 @@ def test_a_run_still_going_is_counted_to_now(tmp_path, monkeypatch, status):
     monkeypatch.setattr(sessions, "sessions_root", lambda: str(tmp_path / "sessions"))
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
         runs.init(con)
-        run = runs.create(con, workspace=str(tmp_path), question="Run A")
+        run = research_run(con, workspace=str(tmp_path), question="Run A")
         window = _session(tmp_path / "sessions" / "last-order" / "window.jsonl",
                           _call("big", 100, 1.0, 1_050_000), _call("big", 700, 7.0, 9_000_000))
         runs.set_state(con, run["id"], root_session=str(window))

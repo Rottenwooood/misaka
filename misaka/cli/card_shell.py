@@ -25,6 +25,9 @@ def contract_flags(text):
     return ["--", text]
 
 
+from misaka.core.platform import cards as card_files
+
+
 def launch(task_id, resume_only=False, say=None):
     """``resume_only`` reopens the saved session without resending the contract. ``say`` (with
     it) is delivered as the first turn of a new attempt: the daemon claimed the card
@@ -34,6 +37,7 @@ def launch(task_id, resume_only=False, say=None):
     with contextlib.closing(db.connect(CFG["db"])) as con:
         row = db.get(con, task_id)
         handoffs = worker.card_handoffs(con, row) if row is not None else []
+        attachments = card_files.attachment_list(con, db.workspace_for(row), task_id) if row is not None else []
         extras = (worker.card_extras(con, row)
                   if row is not None else {})
     if row is None:
@@ -57,8 +61,7 @@ def launch(task_id, resume_only=False, say=None):
         # The card's folder is the project; a deleted or moved one is never recreated in silence.
         sys.exit(f"Card {task_id}: its folder {workspace} no longer exists.")
     run_dir = workspace
-    from misaka.core.platform import cards as card_files
-    task["_attachments"] = card_files.attachment_list(run_dir, task_id, workspace=workspace)
+    task["_attachments"] = attachments
     profile_dir = os.path.join(os.path.expanduser(CFG["profiles_root"]), task["assignee"])
     if not os.path.isdir(profile_dir):
         sys.exit(f"Sister {task['assignee']} is not in the roster.")

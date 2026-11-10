@@ -1,4 +1,5 @@
 """Only text headings belong in artifact previews, never binary payloads. Offline fixtures."""
+
 import hashlib
 import io
 import json
@@ -10,6 +11,7 @@ import pytest
 from misaka import workspace
 from misaka.core.platform import tasks
 from misaka.core.research import runs, tools, workflow
+from tests.factories import research_run
 
 
 def artifact(tmp_path, suffix='.md', content=b'# Heading\n', metadata=None):
@@ -118,7 +120,7 @@ async def test_both_live_view_and_saved_index_preserve_binary_paths_without_payl
     monkeypatch.setattr(workspace.corpus, 'docs', lambda **k: [])
     con = tasks.connect(str(tmp_path / 'board.db'))
     try:
-        run = runs.create(con, workspace=str(tmp_path), question='fixture')
+        run = research_run(con, workspace=str(tmp_path), question='fixture')
         child = runs.create_node(con, run['id'], question='child', parents=[runs.root(con, run['id'])['id']])
         for suffix,branch in [('.png', None), ('.pdf', child['id']), ('.md', None)]:
             row = artifact(tmp_path, suffix, b'# BINARY PAYLOAD\xc2\x85\n' if suffix != '.md' else b'# Real heading\n')

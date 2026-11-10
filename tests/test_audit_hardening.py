@@ -1,9 +1,11 @@
 """Fixes from the code audit attached to GitHub issue #10 (2026-10-07)."""
+
 import asyncio
 
 import pytest
 
 from misaka.core.skills.wiring.skills import SkillsPart
+from tests.factories import research_run
 
 
 def _write(tmp_path, kind, path):
@@ -125,7 +127,7 @@ def test_a_runner_claims_its_row_where_no_identity_can_be_read(tmp_path, monkeyp
     monkeypatch.setattr(tasks, "task_state_dir", lambda tid: str(tmp_path / "state" / tid))
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
         runs.init(con)
-        run = runs.create(con, workspace=str(tmp_path), question="How was the salt monopoly run?")
+        run = research_run(con, workspace=str(tmp_path), question="How was the salt monopoly run?")
         root = runs.root(con, run["id"])
         key = runs.prepare_runner(con, "research_branches", root["id"])
         monkeypatch.setattr(processes, "identity", lambda pid: None)

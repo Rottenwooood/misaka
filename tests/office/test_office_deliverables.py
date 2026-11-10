@@ -20,6 +20,8 @@ import json
 
 import pytest
 
+from tests.factories import research_run
+
 importlib.import_module("docx")
 
 
@@ -36,7 +38,7 @@ def _run_with_artifact(tmp_path, monkeypatch, filename, write):
     monkeypatch.setenv("MISAKA_RUNS_HOME", str(tmp_path / "runs"))
     con = db.connect(str(tmp_path / "board.db"))
     runs.init(con)
-    run = runs.create(con, workspace=str(workspace), question="Did shipments rise?")
+    run = research_run(con, workspace=str(workspace), question="Did shipments rise?")
     node = runs.nodes(con, run["id"])[0]
     con.execute(
         "INSERT INTO research_run_tasks (task_id,run_id,branch_id,kind,round,created_at) "

@@ -1,4 +1,5 @@
 """Offline regressions for the 2026-09-15 lifecycle, persistence and privacy audit."""
+
 import asyncio
 import errno
 import gc
@@ -12,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from tests import posix
+from tests.factories import execution_card
 
 
 def test_office_cache_does_not_bypass_private_material_guard(tmp_path):
@@ -154,7 +156,7 @@ def test_budget_cache_matches_ledger_after_task_deletion(tmp_path, monkeypatch):
     con = tasks.connect(path)
     monkeypatch.setattr(tasks, 'task_state_dir', lambda tid: str(tmp_path / 'state' / tid))
     try:
-        tid = tasks.create_task(con, 'fixture', workspace=str(tmp_path), assignee='10032')
+        tid = execution_card(con, 'fixture', workspace=str(tmp_path), assignee='10032')
         budget.settle_request(con, None, tid, 1, 100)
         assert budget.spent(con) == 100
         assert tasks.delete_task(con, tid)[0]

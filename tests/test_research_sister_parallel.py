@@ -1,4 +1,5 @@
 """The persisted per-LO Sister limit reaches every Research entry point and card driver."""
+
 import asyncio
 import json
 from contextlib import closing
@@ -10,6 +11,7 @@ import pytest
 from misaka.core.platform import cards, repo, tasks
 from misaka.core.research import runs, workflow
 from misaka.core.research.wiring import research
+from tests.factories import contract_card, execution_card, owner, research_run
 
 
 @pytest.fixture
@@ -18,6 +20,7 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks, "task_state_dir", lambda tid: str(tmp_path / "state" / tid))
     with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
         runs.init(con)
+        owner(con)
         yield con
 
 
@@ -36,7 +39,7 @@ def test_concurrency_settings_are_independent(value):
 
 
 def test_old_run_defaults_without_rewriting_saved_limits(board, tmp_path):
-    run = runs.create(board, workspace=str(tmp_path), question="Legacy run")
+    run = research_run(board, workspace=str(tmp_path), question="Legacy run")
     old = json.dumps({"max_depth": 2, "parallel": 8, "max_followups": 2})
     board.execute("UPDATE research_runs SET limits_json=? WHERE id=?", (old, run["id"]))
     restored = runs.get(board, run["id"])
@@ -159,14 +162,14 @@ class BatchObserved(Exception):
                                            ({"parallel": 8}, 4)])
 @pytest.mark.parametrize("fork", [False, True])
 async def test_restored_root_and_fork_dispatch_saved_width(board, tmp_path, saved, expected, fork):
-    run = runs.create(board, workspace=str(tmp_path), question="Dispatch", limits=saved)
+    run = research_run(board, workspace=str(tmp_path), question="Dispatch", limits=saved)
     # Exercise genuinely old JSON as well as explicitly configured new runs.
     board.execute("UPDATE research_runs SET limits_json=? WHERE id=?", (json.dumps(saved), run["id"]))
     root = runs.nodes(board, run["id"])[0]
     node = runs.create_node(board, run["id"], question="Child", parents=[root["id"]]) if fork else root
     ids = []
     for i in range(18):
-        tid = tasks.create_task(board, f"Card {i}", assignee="10032", workspace=str(tmp_path))
+        tid = execution_card(board, f"Card {i}", assignee="10032", workspace=str(tmp_path))
         runs.link_task(board, run["id"], tid, kind="investigate", node=node)
         board.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
         ids.append(tid)
@@ -189,11 +192,11 @@ async def test_restored_root_and_fork_dispatch_saved_width(board, tmp_path, save
 
 @pytest.mark.parametrize("cap,expected_new", [(8, 4), (4, 0), (2, 0)])
 async def test_active_help_waiting_and_unsettled_cards_share_slots(board, tmp_path, cap, expected_new):
-    run = runs.create(board, workspace=str(tmp_path), question="Slots", limits={"sister_parallel": cap})
+    run = research_run(board, workspace=str(tmp_path), question="Slots", limits={"sister_parallel": cap})
     root = runs.nodes(board, run["id"])[0]
     ids = []
     for i, status in enumerate(["running", "review", "blocked", "done", *["ready"] * 10]):
-        tid = tasks.create_task(board, f"Card {i}", assignee="10032", workspace=str(tmp_path))
+        tid = execution_card(board, f"Card {i}", assignee="10032", workspace=str(tmp_path))
         runs.link_task(board, run["id"], tid, kind="investigate", node=root)
         board.execute("UPDATE tasks SET status=?,block_kind='needs_input' WHERE id=?", (status, tid))
         ids.append(tid)
@@ -217,14 +220,14 @@ async def test_active_help_waiting_and_unsettled_cards_share_slots(board, tmp_pa
 
 @pytest.mark.parametrize("host_cap,sister_cap,expected", [(12, 12, 8), (3, 12, 3), (12, 2, 2)])
 async def test_sister_width_keeps_global_admission_and_dependencies(board, tmp_path, host_cap, sister_cap, expected):
-    run = runs.create(board, workspace=str(tmp_path), question="Admission", limits={"sister_parallel": 8})
+    run = research_run(board, workspace=str(tmp_path), question="Admission", limits={"sister_parallel": 8})
     root = runs.nodes(board, run["id"])[0]
     ids = []
     for i in range(10):
-        tid = cards.create(board, str(tmp_path), f"Card {i}", "## deliverable\nnotes.md\n", "10032")
+        tid = contract_card(board, str(tmp_path), f"Card {i}", "## deliverable\nnotes.md\n", "10032")
         runs.link_task(board, run["id"], tid, kind="investigate", node=root)
         ids.append(tid)
-    dependent = cards.create(board, str(tmp_path), "Dependent", "## deliverable\nnotes.md\n", "10032", needs=[ids[0]])
+    dependent = contract_card(board, str(tmp_path), "Dependent", "## deliverable\nnotes.md\n", "10032", needs=[ids[0]])
     runs.link_task(board, run["id"], dependent, kind="investigate", node=root)
     admitted = []
 

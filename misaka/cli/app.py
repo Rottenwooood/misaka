@@ -30,12 +30,13 @@ def _parser(extension_commands=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     tk = sub.add_parser("task", help="Add a task card, start one, or delete one",
-                        usage="misaka task add TITLE --to SISTER (--body TEXT | --body-file PATH) [options]\n"
+                        usage="misaka task add TITLE --request REQUEST --instance INSTANCE (--body TEXT | --body-file PATH) [options]\n"
                               "       misaka task start ID\n"
                               "       misaka task ID --delete")
     tk.add_argument("words", nargs="+", help=argparse.SUPPRESS)
     tk.add_argument("--delete", action="store_true", help="Delete the card and its event history")
-    tk.add_argument("--to", metavar="SISTER", help="add: the Sister (or ally) the card is for")
+    tk.add_argument("--instance", help="add: the Sister instance identity")
+    tk.add_argument("--request", help="add: the owning work request identity")
     tk.add_argument("--body", help="add: the task contract; it must have a `## acceptance criteria` section")
     tk.add_argument("--body-file", help="add: read the task contract from this file")
     tk.add_argument("--reviewer", help="add: an independent reviewer, a Sister other than the assignee")
@@ -43,6 +44,12 @@ def _parser(extension_commands=None):
     tk.add_argument("--model", help="add: the model for this card only (default: the Sister's own)")
     tk.add_argument("--needs", action="append", default=[], metavar="ID",
                     help="add: a card this one waits for (repeatable)")
+
+    state = sub.add_parser("state", help="Inspect or atomically edit work requests, templates, instances and plans")
+    state_sub = state.add_subparsers(dest="state_cmd", required=True)
+    state_sub.add_parser("show")
+    state_apply = state_sub.add_parser("apply")
+    state_apply.add_argument("--file", required=True, help="JSON operation batch; - reads stdin")
 
     sub.add_parser("board", help="Show the task board")
 
@@ -137,6 +144,7 @@ def _parser(extension_commands=None):
     us.add_argument("--limit", type=int, default=10, help="How many recent runs to list without --run (default: 10)")
 
     rs = sub.add_parser("research", help="Run the Research Workflow on a question")
+    rs.add_argument("--owner", help="Last Order owner instance for a new research run")
     rs.add_argument("goal", nargs="?", help="Research question for a new run")
     rs.add_argument("--resume", metavar="RUN_ID", help="Resume an existing research run")
     rs.add_argument("--tell", metavar="RUN_ID",
@@ -320,7 +328,10 @@ def _cmd_net(args):
         except (ConnectionError, FileNotFoundError, OSError):
             print("Daemon is not running.")
         sys.exit(0)
-    info = net.ensure()
+    try:
+        info = net.ensure()
+    except RuntimeError as error:
+        sys.exit(str(error))
     if args.net_cmd == "status":
         print(f"Daemon pid={info['pid']}, panes={info['panes']}")
     elif args.net_cmd == "panes":
@@ -384,14 +395,20 @@ def _cmd_task(args):
     op, rest = args.words[0], args.words[1:]
     if op == "add":
         sys.exit(_task_add(con, " ".join(rest), args))
+    if op == "export" and len(rest) == 1:
+        print(card_files.export(con,rest[0]))
+        return
     if op == "start" and len(rest) == 1:
         sys.exit(_task_start(con, rest[0]))
     if not args.delete or rest:
-        sys.exit("usage: misaka task add TITLE --to SISTER (--body TEXT | --body-file PATH) | "
+        sys.exit("usage: misaka task add TITLE --request REQUEST --instance INSTANCE (--body TEXT | --body-file PATH) | "
                  "misaka task start ID | misaka task ID --delete")
     row = db.get(con, op)
-    ok, msg = (card_files.remove(con, row["workspace"], op) if row
-               else (False, f"Card not found: {op}"))
+    try:
+        ok, msg = (card_files.remove(con, row["workspace"], op) if row
+                   else (False, f"Card not found: {op}"))
+    except ValueError as error:
+        ok, msg = False, str(error)
     print(msg)
     sys.exit(0 if ok else 1)
 
@@ -409,20 +426,26 @@ def _task_add(con, title, args):
             return f"Cannot read {args.body_file}: {error}"
         except UnicodeDecodeError:
             return f"{args.body_file} is not UTF-8 text; save it as UTF-8 (Notepad: Save as, Encoding: UTF-8)."
+    from misaka.core.platform import work
+    try:
+        executor = work.instance(con, args.instance)
+        work.request(con, args.request)
+    except ValueError as error:
+        return str(error)
     cards, errors = validate.validate_cards(
-        [{"title": title, "body": body, "assignee": args.to, "priority": args.priority, "model": args.model}],
-        roster.executors())
+        [{"title":title,"body":body,"assignee":executor["template_id"],"priority":args.priority,"model":args.model}],
+        {executor["template_id"]})
     if args.reviewer and args.reviewer not in set(roster.roster_names()):
         errors.append(f"reviewer {args.reviewer} is not in the Sister roster")
-    if args.reviewer and args.reviewer == args.to:
+    if args.reviewer and args.reviewer == executor["template_id"]:
         errors.append("the reviewer must be different from the assignee")
     if errors:
         return ("Card not added: " + "; ".join(errors) +
                 "\nThe body is the task contract: `## goal`, `## boundaries` and `## acceptance criteria`.")
     card = cards[0]
     try:
-        tid = card_files.create(con, db.canonical_workspace(), card["title"], card["body"], card["assignee"],
-                                model=card["model"], priority=card["priority"], reviewer=args.reviewer,
+        tid = card_files.create(con, db.canonical_workspace(), card["title"], card["body"], args.instance,
+                                request_id=args.request, model=card["model"], priority=card["priority"], reviewer=args.reviewer,
                                 needs=args.needs)
     except ValueError as error:
         return f"Card not added: {error}"
@@ -452,6 +475,11 @@ def _task_start(con, task_id):
     after = db.get(con, task_id)
     print(f"Card {task_id}: {after['status'] if after else 'gone'}.")
     return 0 if ran else 1
+
+
+def _cmd_state(args):
+    from misaka.cli.state import run
+    return run(args)
 
 
 def _cmd_view(args):
@@ -560,7 +588,7 @@ def _cmd_research(args):
         from misaka.core.platform import cards as card_files
         card_files.init_project(os.getcwd(), draft_brief=False, git=False)
         run = runs.create(con, workspace=os.getcwd(), question=args.goal,
-                          limits=limits,
+                          limits=limits, owner_id=args.owner,
                           token_start=budget.spent(con))
         print(f"Research run {run['id']}: {run['workspace']}")
     def progress(event):
@@ -924,6 +952,7 @@ COMMANDS = {
     "task": _cmd_task,
     "board": _cmd_board,
     "view": _cmd_view,
+    "state": _cmd_state,
     "research": _cmd_research,
     "usage": _cmd_usage,
     "web": _cmd_web,
@@ -940,6 +969,8 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     # A viewer must also work on an uninitialized or broken home, without seeding
     # profiles, creating logs/databases or installing model metering hooks.
+    if argv[:2] == ["state", "show"]:
+        return _cmd_state(_parser().parse_args(argv))
     if argv[:1] == ["view"]:
         return _cmd_view(_parser().parse_args(argv))
     # setup, update and uninstall must still run on a settings.json that stops everything else.
