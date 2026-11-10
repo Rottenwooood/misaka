@@ -9,7 +9,7 @@ built-in dark/light theme, adapted to the terminal background; only herdr's
 color roles are borrowed.
 
 Controls: click a tab, sidebar entry or pane to focus it. Prefix key ctrl+b,
-then: 1-9 switch tab | n/p cycle tabs | hjkl move focus | c new tab |
+then: 1-9 switch tab | n/p cycle tabs | hjkl move focus | c new tab | t tasks |
 v / - split side by side / stacked | z zoom | g navigator | [ copy mode | r resize |
 T / W rename tab / space |
 x close pane | d quit (Last Order and the Sisters shut down with the panel) | ? key help |
@@ -37,6 +37,8 @@ from misaka.ui.panel import selection as selmod
 from misaka.ui.panel.selection import Selection
 from misaka.ui.panel.selection import absolute_row as _abs_row
 from misaka.ui.panel.text_editor import TextEditor, grapheme_width, graphemes
+from misaka.ui.task_view import command as task_view_command
+from misaka.ui.task_view import is_task_view
 from misaka.utils import local_socket
 
 # The host terminal is a tty on POSIX and a console on Windows, whose input is read on a thread
@@ -437,7 +439,7 @@ def pane_state(pane):
     someone must act before anything moves: a blocked, triaged, or failed card, or one parked
     at the peer-review gate, is "blocked" too. A finished card nobody looked at is done
     (idle + unseen); a dead pane is unknown. Pure, so testable."""
-    if not pane["alive"]:
+    if not pane["alive"] or is_task_view(pane.get("argv")):
         return "unknown", True
     reported = (pane.get("reported") or {}).get("state")
     detected = pane.get("agent_state")
@@ -500,7 +502,7 @@ def sidebar_model(spaces, listing, focused_id, active_id):
                     row["state"], row["seen"] = state, seen
                 # ponytail: MISAKA's own shell panes carry this title; one running an ally (the
                 # daemon recognised codex/claude in its foreground) counts as that agent.
-                if pane["title"] == "shell" and not pane.get("ally"):
+                if is_task_view(pane.get("argv")) or (pane["title"] == "shell" and not pane.get("ally")):
                     continue
                 agents.append({"pane": pane_id, "space": row["label"], "space_key": space["id"],
                                "tab": str(index + 1) if multi else None,
@@ -951,7 +953,7 @@ def navigator_rows(spaces, listing, focused_id, *, query="", state_filter=None, 
                 state, seen = pane_state(pane)
                 ally = pane.get("ally") or None
                 own = pane["title"] and pane["title"] != "shell"
-                agent_kind = ally or ("misaka" if own else None)
+                agent_kind = None if is_task_view(pane.get("argv")) else ally or ("misaka" if own else None)
                 name = pane["title"] if own else None
                 tab_name = custom if custom is not None else None
                 if len(panes_) == 1:
@@ -1393,9 +1395,9 @@ def format_copy_prompt_bar(direction, editor, width):
 
 
 def format_prefix_bar(width, prefix_name="ctrl+b"):
-    """herdr menus.rs:31-62 render_prefix_overlay: the PREFIX bar's four hints."""
+    """herdr menus.rs:31-62 render_prefix_overlay, with MISAKA's task-view entry."""
     return format_mode_bar("PREFIX", (("esc", "cancel"), (prefix_name, "send prefix"),
-                                      ("g", "navigator"), ("?", "keybinds")), width)
+                                      ("t", "tasks"), ("g", "navigator"), ("?", "keybinds")), width)
 
 
 def format_rename_popup(title, editor, rect):
@@ -1439,6 +1441,7 @@ def format_rename_popup(title, editor, rect):
 _HELP_ROWS = [
     ("1-9", "Switch to tab N"), ("n / p", "Next / previous tab"),
     ("h j k l", "Focus left / down / up / right"), ("c", "New tab"),
+    ("t", "Open / focus read-only task canvas"),
     ("v", "Split side by side"), ("-", "Split top and bottom"),
     ("z", "Zoom: focused pane fills the tab"), ("g", "Go to: search every space and pane"),
     ("[", "Copy mode: move, search, select, copy"), ("r", "Resize: h/l width, j/k height"),
@@ -3786,7 +3789,7 @@ def launch():
                 mode = Mode.TERMINAL
                 restore_bottom()
 
-    def new_pane(argv, title, *, place, cwd=None):
+    def new_pane(argv, title, *, place, cwd=None, env=None):
         """Ask the daemon for a pane seated at ``place`` (Daemon._seat): {"split": pane},
         {"tab": pane}, {"space": id} or {"space": True}; "name" inside it names a new tab. The pane lands in
         the focused job's folder unless ``cwd`` says otherwise (herdr terminal.new_cwd="current")."""
@@ -3802,11 +3805,22 @@ def launch():
                       or (space["folder"] if space else os.getcwd()))
         out = control.request("pane.create", {
             "argv": argv, "cwd": cwd, "title": title, "place": place,
-            "env": {"MISAKA_THEME": hui.theme_variant()}})
+            "env": {"MISAKA_THEME": hui.theme_variant(), **(env or {})}})
         listing = panes()
         reload_layout()
         focus(out["pane_id"], force_layout=True)
         return out["pane_id"]
+
+    def open_tasks():
+        space = active_space()
+        project = os.path.realpath(space["folder"] if space else os.getcwd())
+        existing = next((p for p in listing if p["alive"] and is_task_view(p.get("argv"))
+                         and os.path.realpath(p["cwd"]) == project), None)
+        if existing:
+            focus(existing["id"], force_layout=True)
+            return
+        argv, env = task_view_command([project])
+        new_pane(argv, "Tasks · 只读", place={"tab": focused}, cwd=project, env=env)
 
     def new_space_here():
         """herdr new_workspace (the " new" button): another space in the same folder, its root a shell."""
@@ -4306,6 +4320,8 @@ def launch():
             toggle_zoom()
         elif text == "c":                        # herdr new_tab.
             new_pane([_shell()], "shell", place={"tab": focused})
+        elif text == "t":
+            open_tasks()
         elif text == "v":                        # split_vertical: side by side.
             new_pane([_shell()], "shell", place={"split": focused, "direction": "h"})
         elif text == "-":                        # split_horizontal: stacked.

@@ -204,7 +204,7 @@ def main(report_path=None):
                         continue
                     term.write(raw)
                     text = term.recent_text(term.rows)
-                    if contains in text and raw.endswith(b"\x1b[?2026l"):
+                    if contains in text and b"\x1b[?2026l" in raw:
                         FRAMES.append({"label": label, "text": text})
                         return text
                 assert proc.poll() is None, ("viewer exited", proc.returncode, text)
@@ -425,11 +425,104 @@ def main(report_path=None):
             check(
                 "真实原 Panel daemon 托管 --pane，接收输入并退出；查看器不占用 card，退出不关闭 daemon"
             )
+
+            # Launch the actual outer Panel client. The Last Order pane is an external
+            # terminal fixture: no agent loop or model response is mocked inside Panel.
+            lo = rpc(
+                "pane.create",
+                {
+                    "argv": [
+                        sys.executable,
+                        "-u",
+                        "-c",
+                        "import time; print('LO EXTERNAL FIXTURE', flush=True); time.sleep(120)",
+                    ],
+                    "cwd": str(project),
+                    "title": "Last Order",
+                },
+            )["pane_id"]
+            master, slave = os.openpty()
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 44, 140, 0, 0))
+            saved = termios.tcgetattr(slave)
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "misaka", "panel"],
+                cwd=project,
+                env={**env, "MISAKA_ALLOW_NESTED": "1"},
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                start_new_session=True,
+            )
+            os.set_blocking(master, False)
+            term = ghostty.Terminal(
+                140, 44, on_write_pty=lambda raw: os.write(master, raw)
+            )
+            try:
+                frame("完整 Panel 客户端启动", "LO EXTERNAL FIXTURE")
+                os.write(master, b"\x02t")
+                text = frame("Panel 快捷键打开任务 tab", "任务画布")
+                assert "导出功能已更新" in text
+                assert "agents" in text and "Last Order" in text
+                current = [
+                    p
+                    for p in rpc("panes.list")["panes"]
+                    if p["alive"] and "view" in p["argv"]
+                ]
+                assert len(current) == 1 and not current[0]["busy"]
+                task_pane = current[0]["id"]
+                # Only the tab/chrome names the viewer; it is not an agent sidebar row.
+                sidebar_text = "\n".join(line[:24] for line in text.splitlines())
+                assert "Tasks" not in sidebar_text
+                os.write(master, b"\x02t")
+                # Use the next forwarded key as a synchronization barrier.
+                key("right")
+                frame("Panel 输入转发到画布", "视口 x=6 y=0")
+                assert (
+                    len(
+                        [
+                            p
+                            for p in rpc("panes.list")["panes"]
+                            if p["alive"] and "view" in p["argv"]
+                        ]
+                    )
+                    == 1
+                )
+                os.write(master, b"\x021")
+                frame("切回原 Last Order tab", "LO EXTERNAL FIXTURE")
+                os.write(master, b"\x02t")
+                frame("再次聚焦现有画布", "视口 x=6 y=0")
+                # Mouse passes through the actual outer client before reaching the canvas.
+                # Blank area near the right edge avoids chrome, sidebar and task nodes.
+                mouse("press", 128, 10)
+                mouse("drag", 120, 10)
+                mouse("release", 120, 10)
+                frame("完整 Panel 鼠标拖动画布", "视口 x=14 y=0")
+                key("q")
+                frame("关闭画布保留原会话", "LO EXTERNAL FIXTURE")
+                assert rpc("pane.read", {"id": lo})["alive"]
+                assert not any(
+                    p["id"] == task_pane and p["alive"]
+                    for p in rpc("panes.list")["panes"]
+                )
+                check(
+                    "完整 Panel 客户端：快捷键开图、重复聚焦、切回会话、按键与鼠标转发；查看器不列为 Agent，关闭不结束原会话"
+                )
+                os.write(master, b"\x02d")
+                assert proc.wait(timeout=8) == 0
+                assert termios.tcgetattr(slave) == saved
+            finally:
+                if proc.poll() is None:
+                    proc.terminate()
+                    proc.wait(timeout=4)
+                term.close()
+                os.close(master)
+                os.close(slave)
         finally:
             try:
                 rpc("server.stop")
             except (OSError, AssertionError):
-                daemon.terminate()
+                if daemon.poll() is None:
+                    daemon.terminate()
             daemon.wait(timeout=8)
             daemon_log.close()
 
@@ -437,7 +530,7 @@ def main(report_path=None):
         "passed": len(CHECKS),
         "checks": CHECKS,
         "frames": FRAMES,
-        "scope": "CLI + external files/SQLite + real PTY + libghostty + original Panel daemon; no model execution",
+        "scope": "CLI + external files/SQLite + real PTY + libghostty + original Panel daemon and full client; no model execution",
     }
     if report_path:
         Path(report_path).write_text(json.dumps(result, ensure_ascii=False, indent=2))

@@ -18,18 +18,9 @@ def run(args):
     ]
     if args.pane:
         from misaka.ui.panel import client
+        from misaka.ui.task_view import command
 
-        argv = [sys.executable, "-m", "misaka", "view", "tasks"]
-        for project in projects:
-            argv.extend(["--project", project])
-        # Use the caller's code, even when a pre-existing daemon came from another install.
-        source = str(Path(__file__).resolve().parents[2])
-        env = {
-            "MISAKA_HOME": str(home.home()),
-            "PYTHONPATH": os.pathsep.join(
-                filter(None, [source, os.environ.get("PYTHONPATH")])
-            ),
-        }
+        argv, env = command(projects)
         try:
             result = client.request(
                 "pane.create",

@@ -31,6 +31,7 @@ from misaka.ui.panel import (
     geometry as hui,  # layout.rs port: split_at / remove_pane / pane_ids
 )
 from misaka.ui.panel import ghostty as vt
+from misaka.ui.task_view import is_task_view
 from misaka.utils import file_lock, local_socket
 from misaka.utils.streams import STREAM_LIMIT
 
@@ -368,7 +369,7 @@ def _pane_busy(pane, ally_state=None):
     Agent panes: busy when the screen shows a spinner frame *and* is still
     changing (the engine's spinner is braille, see tui/loader.py).
     """
-    if not pane.alive():
+    if not pane.alive() or is_task_view(pane.argv):
         return False
     if ally_state is not None:
         return ally_state == "working"
