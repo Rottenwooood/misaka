@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>实现方案</title>
+<style>
+  :root{
+    --ink:#22262b; --ink-soft:#4a5158; --muted:#787f87;
+    --paper:#fcfbf8; --panel:#f4f1ea; --rule:#e0dbd1;
+    --accent:#8a5a3b; --accent-soft:#b98a68;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:4.5rem 1.5rem 7rem;background:var(--paper);color:var(--ink);
+    font-family:"Noto Serif CJK SC","Source Han Serif SC","Songti SC","AR PL UMing CN",Georgia,serif;
+    font-size:16.5px;line-height:1.9}
+  main{max-width:43rem;margin:0 auto}
+  h1,h2,h3,.meta,th{font-family:"Noto Sans CJK SC","Source Han Sans SC","PingFang SC","Microsoft YaHei",sans-serif}
+  h1{font-size:1.8rem;line-height:1.45;margin:0 0 .4rem;font-weight:600}
+  .subtitle{font-size:1rem;color:var(--ink-soft);margin:0 0 1.4rem;line-height:1.75}
+  .meta{font-size:.82rem;color:var(--muted);margin:0 0 2.4rem;padding-bottom:1.2rem;border-bottom:1px solid var(--rule)}
+  h2{font-size:1.14rem;font-weight:600;margin:3.2rem 0 .9rem;padding-top:1.4rem;border-top:1px solid var(--rule);line-height:1.5}
+  h2 .num{color:var(--accent-soft);margin-right:.55rem}
+  p{margin:0 0 1rem}
+  ul,ol{margin:0 0 1.1rem;padding-left:1.45rem}
+  li{margin:.3rem 0}
+  li::marker{color:var(--accent-soft)}
+  table{width:100%;border-collapse:collapse;margin:.6rem 0 1.5rem;font-size:.88rem;line-height:1.7}
+  th{text-align:left;font-weight:600;font-size:.82rem;color:var(--ink-soft);background:var(--panel);border-bottom:1px solid var(--rule);padding:.55rem .7rem}
+  td{border-bottom:1px solid var(--rule);padding:.6rem .7rem;vertical-align:top}
+  td:first-child{font-weight:600;white-space:nowrap}
+  pre{background:var(--panel);border:1px solid var(--rule);padding:.9rem 1.1rem;overflow-x:auto;
+    font-size:.82rem;line-height:1.65;font-family:ui-monospace,"JetBrains Mono",Menlo,monospace;margin:.5rem 0 1.4rem}
+  .box{background:var(--panel);border-left:3px solid var(--accent-soft);padding:1.1rem 1.4rem .5rem;margin:1.3rem 0 1.6rem}
+  .note{font-size:.88rem;color:var(--muted);line-height:1.75;margin:-.2rem 0 1.5rem;padding-left:.9rem;border-left:2px solid var(--rule)}
+  footer{margin-top:3.4rem;padding-top:1.3rem;border-top:1px solid var(--rule);font-size:.82rem;color:var(--muted)}
+  @media (max-width:640px){body{padding:2.6rem 1.15rem 4rem;font-size:16px}td:first-child{white-space:normal}}
+  @media print{body{background:#fff;padding:0;font-size:11pt}h2{break-after:avoid}table,.box,pre{break-inside:avoid}}
+</style>
+</head>
+<body>
+<main>
+
+<h1>实现方案</h1>
+<p class="subtitle">模块怎么分、数据怎么存、按什么顺序做、每步怎么验收。除表结构外不含代码。</p>
+<p class="meta">第三份，共三份　·　2026 年 11 月</p>
+
+<h2><span class="num">一</span>模块划分</h2>
+<table>
+  <thead><tr><th>模块</th><th>现有位置</th><th>本次职责</th></tr></thead>
+  <tbody>
+    <tr><td>存储</td><td>core/platform</td><td>模板树、实例、请求、卡片、依赖、订阅、事件；事务与并发控制</td></tr>
+    <tr><td>协调工具</td><td>core/network</td><td>建卡改卡、模板与实例管理、订阅管理、发消息；只注册给协调实例</td></tr>
+    <tr><td>执行</td><td>core/network 与 ui/panel</td><td>实例会话归属、启动检查、认领、产物与历史写入</td></tr>
+    <tr><td>消息</td><td>新增一层适配</td><td>发布、订阅同步、接收回调、去重、暂存重投</td></tr>
+    <tr><td>入口</td><td>cli 与 ui</td><td>人的会话、任务视图、状态查询</td></tr>
+    <tr><td>上下文动作</td><td>core/subagent 与文档层</td><td>打标签、隔离历史、技能候选与复核入口</td></tr>
+  </tbody>
+</table>
+
+<h2><span class="num">二</span>数据结构</h2>
+<p>数据库是配置与状态的唯一权威。以下是本次涉及的表，字段为最小集合。</p>
+<pre>
+templates(
+  id, revision, parent_revision, role, config_json, created_at,
+  primary key(id, revision)
+)
+
+instances(
+  id, template_id, template_revision, label, retired,
+  session_epoch, session_file, writer_pid, writer_identity, created_at,
+  foreign key(template_id, template_revision) references templates(id, revision)
+)
+
+work_requests(
+  id, workspace, title, body, owner_id, revision, created_at
+)
+
+tasks(
+  id, request_id, instance_id, generation,
+  title, body,
+  fs_scope, forbidden_commands,
+  reviewer, verdict, verdict_evidence,
+  status, workspace, created_at, started_at, finished_at,
+  foreign key(request_id) references work_requests(id),
+  foreign key(instance_id) references instances(id)
+)
+
+task_dependencies(child_id, parent_id, primary key(child_id, parent_id))
+
+subscriptions(
+  id, card_id, owner_instance_id, source, type, target,
+  created_at,
+  check((card_id is null) != (owner_instance_id is null))
+)
+
+events(id, task_id, kind, payload, generation, created_at)
+</pre>
+<p>约束：每个实例必须对应一个已存在的模板版本；一张卡片只绑一个实例；一个实例同时只能有一张处于执行中的卡片；依赖只能在同一请求内。</p>
+<p class="note">卡片文件不再保存状态，只作为数据库内容的导出视图，可随时重建。</p>
+
+<h2><span class="num">三</span>关键流程</h2>
+<p><strong>创建实例的三种输入。</strong>只给版本：读取该版本，建立实例。给版本加修改参数：先在该版本下建立新版本节点，再建立依附它的实例。给全部参数：从零建立一个版本节点，再建立依附它的实例。三者都只产生一个实例。</p>
+<p><strong>建卡。</strong>协调层提交请求、卡片、依赖与订阅；一次事务提交；校验引用、无环、实例存在、路径合法。</p>
+<p><strong>启动。</strong>按卡片编号与代次启动；检查调用者、归属、代次、前置全部完成、实例无其他执行中卡片；通过后建立订阅并进入执行。</p>
+<p><strong>结束。</strong>写状态与结论；删除卡片订阅；释放实例；产物留在项目目录。</p>
+<p><strong>投递。</strong>发送方写中心；中心按订阅投递；接收方按消息编号去重后写入实例会话；失败留在中心重试。</p>
+<p><strong>上下文动作。</strong>打标签：卡片结束时把这段历史标记为经历。隔离：把选定历史收在一个根节点下，此后默认不展开。技能候选：提交一条带适用范围的方法，复核后生效。</p>
+
+<h2><span class="num">四</span>阶段与顺序</h2>
+<table>
+  <thead><tr><th>阶段</th><th>内容</th><th>完成标志</th></tr></thead>
+  <tbody>
+    <tr><td>一</td><td>模板树与实例：版本增加父版本；删除实例级覆盖；三种创建输入</td><td>三种输入各能建立一个实例，且实例不带覆盖</td></tr>
+    <tr><td>二</td><td>卡片范围与订阅：文件路径、禁止命令、订阅字段；订阅随卡片建立与删除</td><td>一张卡启动时订阅出现，结束后消失</td></tr>
+    <tr><td>三</td><td>协调工具面：建卡改卡、模板与实例管理、订阅管理、发消息；移除文件与命令工具</td><td>协调实例无法修改文件与执行命令，管理工具可用</td></tr>
+    <tr><td>四</td><td>上下文动作：打标签、隔离历史、技能候选与复核</td><td>卡片结束后可打标签；隔离后默认不再展开；技能候选可复核生效</td></tr>
+    <tr><td>五</td><td>清理：删除旧派工工具、卡片文件权威、旧阶段说明</td><td>仓库内只剩三份文档与实现</td></tr>
+  </tbody>
+</table>
+
+<h2><span class="num">五</span>验收方式</h2>
+<p>每一阶段用同一套方式验收：从一个真实入口开始，走完整链路，记录输出。入口是命令行会话或面板操作，不是内部函数。</p>
+<ul>
+  <li>阶段一：分别用三种输入建立实例，再读取实例确认其版本与会话。</li>
+  <li>阶段二：建一张带订阅的卡片并启动，在中心查询订阅存在；卡片结束后再查，订阅已删除。</li>
+  <li>阶段三：让协调实例尝试修改文件与执行命令，确认工具不存在；再让它建卡并启动。</li>
+  <li>阶段四：结束一张卡片后打标签；隔离一段历史后开新会话，确认默认不展开；提交技能候选并复核。</li>
+  <li>阶段五：删除后从空目录安装，按文档走一遍，确认无残留路径。</li>
+</ul>
+
+<h2><span class="num">六</span>删除清单</h2>
+<ul>
+  <li>实例级配置覆盖的读写路径。</li>
+  <li>旧派工工具与批量派工入口。</li>
+  <li>把验收、等待、监督写进状态机的分支。</li>
+  <li>卡片文件作为权威的读写路径，只保留导出。</li>
+  <li>四份阶段说明，内容并入本文。</li>
+</ul>
+
+<h2><span class="num">七</span>依赖</h2>
+<p>通知中心作为外部依赖，需要具备：身份令牌、订阅增删改查、按目标限频合并、至少一次投递、无匹配订阅时明确拒绝、按目标的待处理量查询。</p>
+<p>缺少的部分按下列顺序处理：先确认现有版本是否已提供；未提供则在中心侧增加最小字段或接口，不在本仓库复制一份通信实现。</p>
+
+<footer>
+  <p>本文只写实现方案。功能行为见第一份，结构与条件见第二份。</p>
+</footer>
+
+</main>
+</body>
+</html>

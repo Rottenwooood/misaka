@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>架构设计</title>
+<style>
+  :root{
+    --ink:#22262b; --ink-soft:#4a5158; --muted:#787f87;
+    --paper:#fcfbf8; --panel:#f4f1ea; --rule:#e0dbd1;
+    --accent:#8a5a3b; --accent-soft:#b98a68;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:4.5rem 1.5rem 7rem;background:var(--paper);color:var(--ink);
+    font-family:"Noto Serif CJK SC","Source Han Serif SC","Songti SC","AR PL UMing CN",Georgia,serif;
+    font-size:16.5px;line-height:1.9}
+  main{max-width:43rem;margin:0 auto}
+  h1,h2,h3,.meta,th{font-family:"Noto Sans CJK SC","Source Han Sans SC","PingFang SC","Microsoft YaHei",sans-serif}
+  h1{font-size:1.8rem;line-height:1.45;margin:0 0 .4rem;font-weight:600}
+  .subtitle{font-size:1rem;color:var(--ink-soft);margin:0 0 1.4rem;line-height:1.75}
+  .meta{font-size:.82rem;color:var(--muted);margin:0 0 2.4rem;padding-bottom:1.2rem;border-bottom:1px solid var(--rule)}
+  h2{font-size:1.14rem;font-weight:600;margin:3.2rem 0 .9rem;padding-top:1.4rem;border-top:1px solid var(--rule);line-height:1.5}
+  h2 .num{color:var(--accent-soft);margin-right:.55rem}
+  p{margin:0 0 1rem}
+  ul,ol{margin:0 0 1.1rem;padding-left:1.45rem}
+  li{margin:.3rem 0}
+  li::marker{color:var(--accent-soft)}
+  table{width:100%;border-collapse:collapse;margin:.6rem 0 1.5rem;font-size:.9rem;line-height:1.7}
+  th{text-align:left;font-weight:600;font-size:.82rem;color:var(--ink-soft);background:var(--panel);border-bottom:1px solid var(--rule);padding:.55rem .7rem}
+  td{border-bottom:1px solid var(--rule);padding:.6rem .7rem;vertical-align:top}
+  td:first-child{font-weight:600;white-space:nowrap}
+  .box{background:var(--panel);border-left:3px solid var(--accent-soft);padding:1.1rem 1.4rem .5rem;margin:1.3rem 0 1.6rem}
+  .flow{border:1px solid var(--rule);background:var(--panel);padding:1rem 1.3rem;margin:1.2rem 0 1.5rem;
+    font-family:"Noto Sans CJK SC","PingFang SC",sans-serif;font-size:.9rem;line-height:2.2;white-space:nowrap;overflow-x:auto}
+  .flow b{color:var(--accent);font-weight:600}
+  .note{font-size:.88rem;color:var(--muted);line-height:1.75;margin:-.2rem 0 1.5rem;padding-left:.9rem;border-left:2px solid var(--rule)}
+  footer{margin-top:3.4rem;padding-top:1.3rem;border-top:1px solid var(--rule);font-size:.82rem;color:var(--muted)}
+  @media (max-width:640px){body{padding:2.6rem 1.15rem 4rem;font-size:16px}td:first-child{white-space:normal}}
+  @media print{body{background:#fff;padding:0;font-size:11pt}h2{break-after:avoid}table,.box,.flow{break-inside:avoid}}
+</style>
+</head>
+<body>
+<main>
+
+<h1>架构设计</h1>
+<p class="subtitle">分几层、每层负责什么、数据往哪里流、哪些条件必须始终成立。不含表结构，不含代码。</p>
+<p class="meta">第二份，共三份　·　2026 年 11 月</p>
+
+<h2><span class="num">一</span>结构</h2>
+<p>四层与三个存储面。</p>
+<div class="flow">
+  <b>入口</b>　人的话 / 订阅事件　→　<b>中心</b>　身份、订阅、投递、合并　→　<b>协调</b>　Last Order 会话　→　<b>执行</b>　实例会话<br>
+  　　　　　　　　　　　　　↕　　　　　　　　　　　　　　　　　　　↕<br>
+  <b>配置与状态</b>（数据库）　　<b>历史</b>（按实例）　　<b>产物</b>（按项目）
+</div>
+<p>入口不解释内容，只把输入交给中心。中心只负责投递，不解释内容。协调层只通过管理工具读写配置与卡片，不接触文件与命令。执行层按卡片执行，写产物与历史。</p>
+
+<h2><span class="num">二</span>每层的职责与边界</h2>
+<table>
+  <thead><tr><th>层</th><th>负责</th><th>不负责</th></tr></thead>
+  <tbody>
+    <tr><td>入口</td><td>把人的输入与订阅事件交给中心</td><td>不判断内容，不拆分任务</td></tr>
+    <tr><td>中心</td><td>身份校验、订阅匹配、投递、合并、重投、去重</td><td>不理解任务、卡片、角色；不保存业务语义</td></tr>
+    <tr><td>协调</td><td>理解要求、写卡片、管理模板与实例、管理订阅、与人通信</td><td>不改文件、不执行命令、不编排执行细节</td></tr>
+    <tr><td>执行</td><td>在实例会话中完成卡片、写产物、写历史</td><td>不改配置、不建卡片、不建实例</td></tr>
+  </tbody>
+</table>
+
+<h2><span class="num">三</span>数据流向</h2>
+<ul>
+  <li>人 → 中心 → 协调会话。</li>
+  <li>事件 → 中心 → 命中订阅的目标（实例或协调会话）。</li>
+  <li>协调 → 管理工具 → 数据库：模板版本、实例、请求、卡片、依赖、订阅。</li>
+  <li>卡片 → 执行层 → 实例会话 → 工作区与历史。</li>
+  <li>实例与协调 → 中心 → 目标。</li>
+  <li>状态查询 → 数据库 → 面板与命令行展示。</li>
+</ul>
+<p>中心不保存任务状态；数据库不保存投递队列；历史库不保存配置；工作区不保存状态。</p>
+
+<h2><span class="num">四</span>单一写入者</h2>
+<p>每一项数据只有一个写入者，避免两处修改同一事实。</p>
+<table>
+  <thead><tr><th>数据</th><th>写入者</th><th>读取者</th></tr></thead>
+  <tbody>
+    <tr><td>模板版本</td><td>协调层的管理工具</td><td>协调、执行装配、面板</td></tr>
+    <tr><td>实例</td><td>协调层的管理工具</td><td>执行层、中心（投递目标）</td></tr>
+    <tr><td>请求与卡片与依赖</td><td>协调层的管理工具</td><td>执行层、面板</td></tr>
+    <tr><td>订阅</td><td>卡片生命周期；协调层管理协调自身的订阅</td><td>中心</td></tr>
+    <tr><td>执行状态与会话指针</td><td>执行层</td><td>协调、面板</td></tr>
+    <tr><td>历史</td><td>执行层</td><td>执行层、检索</td></tr>
+    <tr><td>产物</td><td>执行层</td><td>人、协调、验证</td></tr>
+  </tbody>
+</table>
+
+<h2><span class="num">五</span>必须始终成立的条件</h2>
+<div class="box">
+<ol>
+  <li>每个实例必须依附一个模板版本，实例本身不带配置覆盖。</li>
+  <li>一张卡片在执行期只绑定一个实例；一个实例在同一时刻只服务一张卡片。</li>
+  <li>只有协调层能创建模板版本、实例与卡片。</li>
+  <li>协调层没有修改文件与执行命令的工具。</li>
+  <li>模板决定能力：工具、技能、模型。卡片决定范围：文件路径、禁止命令。两者互不约束。</li>
+  <li>消息是单向的，中心不解释内容；回复是另一条消息。</li>
+  <li>卡片的订阅随卡片结束删除；协调自身的订阅随其实例存在。</li>
+  <li>历史无损；进入模型窗口的是选入的内容与层级摘要，不是截断后的唯一副本。</li>
+  <li>产物属于项目，不属于实例；删除实例不删除产物。</li>
+</ol>
+</div>
+
+<h2><span class="num">六</span>与现有实现的关系</h2>
+<p>保留：会话引擎、工具框架、技能装载、文档索引、研究流程、面板与命令行、事件记录表。</p>
+<p>替换：请求与卡片的存储方式、派工入口、协调层的提示与工具面。</p>
+<p>删除：以卡片文件为权威的读写路径、旧派工工具、把验收或等待写进状态机的部分。</p>
+<p class="note">本分支不追上游。上游的改动不进入本分支，避免把长期支线的结构绑在别人的节奏上。</p>
+
+<h2><span class="num">七</span>取舍与理由</h2>
+<table>
+  <thead><tr><th>选择</th><th>理由</th><th>代价</th></tr></thead>
+  <tbody>
+    <tr><td>不做编排引擎</td><td>拆分、监督、验收属于提示与模型能力，写进机制会被固定成一种方法</td><td>质量依赖提示与模型，系统不提供保证</td></tr>
+    <tr><td>不做多层权限</td><td>模板管能力、卡片管范围，各自表达一件事，简单且够用</td><td>没有形式化的越权证明，依赖工具清单与路径检查</td></tr>
+    <tr><td>中心独立复用</td><td>投递是通用问题，已有实现，避免自建协议与运维</td><td>依赖外部包的版本与部署方式</td></tr>
+    <tr><td>单一数据库</td><td>配置与状态同源，避免文件与数据库两份事实</td><td>并发写依赖数据库的事务与锁</td></tr>
+    <tr><td>实例不带覆盖</td><td>任何配置差异都成为版本节点，运行可复现</td><td>小的差异也要产生版本，版本树会长</td></tr>
+    <tr><td>消息单向</td><td>不引入请求应答状态，实现简单，失败面小</td><td>调用方自行判断何时需要后续消息</td></tr>
+  </tbody>
+</table>
+
+<h2><span class="num">八</span>失败与边界</h2>
+<ul>
+  <li>中心不可用：本地动作照常，消息在发送端暂存，恢复后重投，按编号去重。</li>
+  <li>实例异常终止：产生记录，卡片可绑定另一个实例重新开始。</li>
+  <li>协调会话过长：更换会话，状态从数据库读取，历史保留。</li>
+  <li>数据库为单机文件：多机部署需要替换存储层，本版本不提供。</li>
+  <li>中心为单节点：多用户需要多个中心实例，本版本不提供共享。</li>
+</ul>
+
+<h2><span class="num">九</span>部署形态</h2>
+<p>单机形态：会话与中心在同一台机器，中心走本地 socket 或本机 HTTP。</p>
+<p>专机形态：中心单独部署，本机通过 HTTP 连接，需要加密与凭据管理；中心默认只监听本机，对外部署必须前置加密。</p>
+
+<footer>
+  <p>本文只写结构与条件。功能行为见第一份，表结构与阶段见第三份。</p>
+</footer>
+
+</main>
+</body>
+</html>
