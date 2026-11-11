@@ -93,7 +93,7 @@ def settings(instance_id):
 
 
 def mutate_settings(instance_id, mutate):
-    """Persist engine selectors as instance overrides, without modifying a template."""
+    """Persist engine selectors as a new template node for this instance."""
     with closing(tasks.connect(str(home.path("db")))) as con, tasks.write_txn(con):
         item = work.instance(con, instance_id)
         writer = _CURRENT.get()
@@ -108,14 +108,14 @@ def mutate_settings(instance_id, mutate):
         if "thinking" in config:
             data["defaultThinkingLevel"] = config["thinking"]
         mutate(data)
-        overrides = json.loads(con.execute("SELECT overrides_json FROM instances WHERE id=?", (instance_id,)).fetchone()[0])
+        patch = {}
         if data.get("defaultProvider") and data.get("defaultModel"):
-            overrides["model"] = f"{data.pop('defaultProvider')}/{data.pop('defaultModel')}"
+            patch["model"] = f"{data.pop('defaultProvider')}/{data.pop('defaultModel')}"
         if "defaultThinkingLevel" in data:
-            overrides["thinking"] = data.pop("defaultThinkingLevel")
-        overrides["settings"] = data
-        validate_config(overrides)
-        con.execute("UPDATE instances SET overrides_json=? WHERE id=?", (json.dumps(overrides), item["id"]))
+            patch["thinking"] = data.pop("defaultThinkingLevel")
+        patch["settings"] = data
+        validate_config({**config, **patch})
+        work.derive_node(con, item["id"], patch)
     return settings(instance_id)
 
 

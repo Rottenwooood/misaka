@@ -17,6 +17,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS templates (
  id TEXT NOT NULL,
  revision INTEGER NOT NULL CHECK(revision > 0),
+ parent_revision INTEGER,
  role TEXT NOT NULL CHECK(role IN ('last-order','sister')),
  config_json TEXT NOT NULL,
  created_at INTEGER NOT NULL,
@@ -26,7 +27,6 @@ CREATE TABLE IF NOT EXISTS instances (
  id TEXT PRIMARY KEY,
  template_id TEXT NOT NULL,
  template_revision INTEGER NOT NULL,
- overrides_json TEXT NOT NULL DEFAULT '{}',
  label TEXT NOT NULL,
  retired INTEGER NOT NULL DEFAULT 0 CHECK(retired IN (0,1)),
  created_at INTEGER NOT NULL,
@@ -88,14 +88,38 @@ def instance(con, instance_id):
     if row is None:
         raise ValueError(f"Instance not found: {instance_id}")
     data = dict(row)
-    data["config"] = {
-        **json.loads(data.pop("config_json")),
-        **json.loads(data.pop("overrides_json")),
-    }
+    data["config"] = json.loads(data.pop("config_json"))
     if data["session_file"]:
         from misaka.config import home
         data["session_file"] = str(home.from_stored(data["session_file"]))
     return data
+
+
+def derive_node(con, instance_id, patch):
+    """Create a child revision of the instance's template and repoint the instance.
+
+    Instances carry no configuration of their own, so a change to one instance's
+    configuration is a new node in that template's tree.
+    """
+    item = instance(con, instance_id)
+    row = con.execute(
+        "SELECT * FROM templates WHERE id=? AND revision=?",
+        (item["template_id"], item["template_revision"]),
+    ).fetchone()
+    merged = {**json.loads(row["config_json"]), **patch}
+    revision = con.execute(
+        "SELECT MAX(revision) FROM templates WHERE id=?", (item["template_id"],)
+    ).fetchone()[0] + 1
+    con.execute(
+        "INSERT INTO templates(id,revision,parent_revision,role,config_json,created_at) "
+        "VALUES(?,?,?,?,?,?)",
+        (item["template_id"], revision, item["template_revision"], row["role"],
+         _json(merged), int(time.time())),
+    )
+    con.execute(
+        "UPDATE instances SET template_revision=? WHERE id=?", (revision, instance_id)
+    )
+    return revision
 
 
 def request(con, request_id):
@@ -347,34 +371,77 @@ def apply(con, operations):
                         "Template role must be last-order or sister and cannot change"
                     )
                 config = _json(op.pop("config", None))
+                parent = op.pop("parent_revision", None)
+                if kind == "template.revise" and parent is None:
+                    parent = latest["revision"]
+                if parent is not None and (
+                    type(parent) is not int
+                    or con.execute(
+                        "SELECT 1 FROM templates WHERE id=? AND revision=?", (tid, parent)
+                    ).fetchone()
+                    is None
+                ):
+                    raise ValueError("Parent revision must exist in the same template")
                 revision = latest["revision"] + 1 if latest is not None else 1
                 if op:
                     raise ValueError(f"Unknown fields: {sorted(op)}")
                 con.execute(
-                    "INSERT INTO templates VALUES(?,?,?,?,?)",
-                    (tid, revision, role, config, now),
+                    "INSERT INTO templates(id,revision,parent_revision,role,config_json,created_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (tid, revision, parent if latest is not None else None, role, config, now),
                 )
-                results.append({"id": tid, "revision": revision})
+                results.append({"id": tid, "revision": revision,
+                                "parent_revision": parent if latest is not None else None})
             elif kind == "instance.create":
                 iid = identifier(op.pop("id", None))
                 tid = identifier(op.pop("template_id", None))
                 revision = op.pop("template_revision", None)
-                if (
-                    type(revision) is not int
-                    or con.execute(
-                        "SELECT 1 FROM templates WHERE id=? AND revision=?",
-                        (tid, revision),
-                    ).fetchone()
-                    is None
-                ):
-                    raise ValueError("Instance must pin an existing template revision")
-                overrides = _json(op.pop("overrides", {}))
+                config = op.pop("config", None)
+                role = op.pop("role", None)
                 label = _text(op.pop("label", iid), "label")
                 if op:
                     raise ValueError(f"Unknown fields: {sorted(op)}")
+                if revision is None:
+                    if config is None or role not in ("last-order", "sister"):
+                        raise ValueError(
+                            "A new template needs a role and a full configuration"
+                        )
+                    if con.execute(
+                        "SELECT 1 FROM templates WHERE id=?", (tid,)
+                    ).fetchone() is not None:
+                        raise ValueError(
+                            "Template already exists; pass template_revision and a patch instead"
+                        )
+                    revision = 1
+                    con.execute(
+                        "INSERT INTO templates(id,revision,parent_revision,role,config_json,created_at) "
+                        "VALUES(?,?,NULL,?,?,?)",
+                        (tid, revision, role, _json(config), now),
+                    )
+                else:
+                    parent = con.execute(
+                        "SELECT * FROM templates WHERE id=? AND revision=?",
+                        (tid, revision),
+                    ).fetchone()
+                    if parent is None:
+                        raise ValueError(
+                            "Instance must pin an existing template revision"
+                        )
+                    if config is not None:
+                        merged = {**json.loads(parent["config_json"]), **config}
+                        revision = con.execute(
+                            "SELECT MAX(revision) FROM templates WHERE id=?", (tid,)
+                        ).fetchone()[0] + 1
+                        con.execute(
+                            "INSERT INTO templates(id,revision,parent_revision,role,config_json,created_at) "
+                            "VALUES(?,?,?,?,?,?)",
+                            (tid, revision, parent["revision"], parent["role"],
+                             _json(merged), now),
+                        )
                 con.execute(
-                    "INSERT INTO instances(id,template_id,template_revision,overrides_json,label,created_at) VALUES(?,?,?,?,?,?)",
-                    (iid, tid, revision, overrides, label, now),
+                    "INSERT INTO instances(id,template_id,template_revision,label,created_at) "
+                    "VALUES(?,?,?,?,?)",
+                    (iid, tid, revision, label, now),
                 )
                 results.append(instance(con, iid))
             elif kind == "instance.new-session":

@@ -167,7 +167,7 @@ CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, kind, id);
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
 """
-TASK_SCHEMA_VERSION = 11
+TASK_SCHEMA_VERSION = 12
 MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 # One failure model for every way an attempt can end badly -- a crash, a timeout, a provider
 # error, a turn that ended without settling the card. Each counts against the same limit and the

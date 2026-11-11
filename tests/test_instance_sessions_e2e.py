@@ -291,7 +291,7 @@ def main(report_path=None):
 
         s.apply([
             {"op": "instance.create", "id": "stop-coordinator", "template_id": "coord", "template_revision": 1,
-             "overrides": {"tools": ["misaka_sister_stop"]}},
+             "config": {"tools": ["misaka_sister_stop"]}},
             {"op": "plan.update", "request_id": "req-other", "expected_revision": 1, "cards": [
                 {"id": "t_100004", "title": "Stop explicitly", "instance_id": "sister",
                  "body": "STOP-CARD\n## acceptance criteria\nWait for explicit stop."}]}])

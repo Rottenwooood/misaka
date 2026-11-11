@@ -72,14 +72,16 @@ class ReviseTemplate(Command):
     id: str
     expected_revision: int = Field(ge=1)
     config: dict[str, Any]
+    parent_revision: int | None = Field(None, ge=1)
 
 
 class CreateInstance(Command):
     action: Literal["create_instance"]
     id: str
     template_id: str
-    template_revision: int = Field(ge=1)
-    overrides: dict[str, Any] = Field(default_factory=dict)
+    template_revision: int | None = Field(None, ge=1)
+    config: dict[str, Any] | None = None
+    role: Literal["last-order", "sister"] | None = None
     label: str | None = None
 
 
@@ -113,7 +115,8 @@ def _data(label, value):
 def _roster_config(item):
     config = dict(item["config"])
     local_settings = bool(config.pop("settings", None))
-    fields = ("id", "revision", "role", "label", "template_id", "template_revision", "retired")
+    fields = ("id", "revision", "parent_revision", "role", "label", "template_id",
+              "template_revision", "retired")
     return {**{key: item[key] for key in fields if key in item},
             "config": config, "local_settings": local_settings}
 
