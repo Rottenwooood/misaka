@@ -16,7 +16,7 @@
   .meta{font-size:.82rem;color:var(--muted);margin:0 0 2.4rem;padding-bottom:1.2rem;border-bottom:1px solid var(--rule)}
   h2{font-size:1.14rem;font-weight:600;margin:3.2rem 0 .9rem;padding-top:1.4rem;border-top:1px solid var(--rule);line-height:1.5}
   h2 .num{color:var(--accent-soft);margin-right:.55rem}
-  h3{font-size:.98rem;font-weight:600;margin:1.6rem 0 .5rem}
+  h3{font-size:.98rem;font-weight:600;margin:1.5rem 0 .5rem}
   p{margin:0 0 1rem}
   ul,ol{margin:0 0 1.1rem;padding-left:1.45rem}
   li{margin:.28rem 0}
@@ -38,199 +38,146 @@
 <main>
 
 <h1>实现</h1>
-<p class="subtitle">目录、包、文件、类、依赖、表。类以下视为黑盒，不在本文约束。</p>
+<p class="subtitle">只列必要改动：哪些不动、哪些新增、哪些修改。类以下视为黑盒。</p>
 <p class="meta">2026 年 11 月　·　三份文档之二</p>
 
-<h2><span class="num">一</span>目标目录树</h2>
+<h2><span class="num">一</span>改动原则</h2>
+<p>已经能满足设计的部分不动。只改三类：与设计冲突的存储、缺失的能力、为新增能力让路的删除。凡是“换个位置更整齐”的整理，都不做。</p>
+<p>因此以下部分完全不动：人与 Last Order 的会话、面板、后台守护、会话装配、实例会话归属、研究流程、文档索引、技能装载、派工与认领、命令行入口。</p>
+
+<h2><span class="num">二</span>目录树</h2>
+<p>方括号标出的是本次新增文件，其余为现有文件。</p>
 <pre>
 misaka/
 ├── cli/
-│   ├── app.py                 子命令入口与分发
-│   ├── chat.py                会话窗口（人的输入）
-│   ├── state.py               状态命令（人的兜底入口）
-│   └── view.py                状态视图的文本形式
+│   ├── app.py                不动
+│   ├── chat.py               不动（人的输入入口）
+│   ├── state.py              不动（人的兜底入口）
+│   └── view.py               修改：读新增列
 ├── core/
-│   ├── work/                  【新增】唯一的配置与状态模型
-│   │   ├── __init__.py        对外导出
-│   │   ├── store.py           WorkStore
-│   │   ├── schema.py          建表与版本
-│   │   ├── templates.py       TemplateTree
-│   │   ├── instances.py       InstanceRegistry
-│   │   ├── requests.py        RequestBook
-│   │   ├── cards.py           CardBook
-│   │   ├── subscriptions.py   SubscriptionBook
-│   │   └── events.py          EventLog
+│   ├── platform/
+│   │   ├── work.py           修改：模板加父版本；实例去覆盖；订阅读写
+│   │   ├── tasks.py          修改：卡片加范围与禁令；订阅表；建表
+│   │   ├── instances.py      修改：三种创建输入；去掉覆盖合并
+│   │   ├── session.py        不动
+│   │   └── processes.py      不动
 │   ├── network/
-│   │   ├── coordination/      【新增】只注册给 Last Order 的工具
-│   │   │   ├── __init__.py    工具装配
-│   │   │   ├── tasks.py       TaskTool
-│   │   │   ├── roster.py      RosterTool
-│   │   │   ├── subscriptions.py SubscriptionTool
-│   │   │   └── messages.py    MessageTool
-│   │   ├── dispatch.py        启动、认领、释放（保留，改数据源）
-│   │   ├── worker.py          卡片执行（保留，改数据源）
-│   │   └── wiring/            工具注册与提示装配（保留，改接线）
-│   ├── messaging/             【新增】中心适配
+│   │   ├── dispatch.py       修改：启动建订阅、结束删订阅、按范围装配
+│   │   ├── worker.py         修改：读范围与禁令
+│   │   ├── messages.py       修改：改为经中心发送
+│   │   └── wiring/
+│   │       ├── network.py    修改：Last Order 工具表去掉文件与命令工具
+│   │       ├── coordination.py 修改：增加订阅与消息两个工具
+│   │       ├── collaboration.py 不动
+│   │       └── capabilities.py  不动
+│   ├── messaging/            【新增】中心适配
 │   │   ├── __init__.py
-│   │   ├── client.py          CenterClient
-│   │   ├── sync.py            SubscriptionSync
-│   │   └── inbox.py           Inbox
-│   ├── context/               【新增】上下文动作
+│   │   ├── client.py         发布、健康、待处理量
+│   │   ├── sync.py           订阅同步
+│   │   └── inbox.py          接收、去重、注入
+│   ├── context/              【新增】上下文动作
 │   │   ├── __init__.py
-│   │   ├── tags.py            ExperienceTag
-│   │   ├── isolation.py       HistoryIsolation
-│   │   └── skills.py          SkillCandidate
-│   ├── platform/              保留：会话、进程、路径、配置
-│   ├── subagent/              保留：子代理运行时
-│   ├── research/              保留：研究流程（接入新模型，工具表另配）
-│   ├── documents/             保留：文档索引
-│   └── skills/                保留：技能装载与可见性
+│   │   ├── tags.py           经历标签
+│   │   ├── isolation.py      历史隔离
+│   │   └── skills.py         技能候选
+│   ├── subagent/             不动
+│   ├── research/             不动
+│   ├── documents/            不动
+│   └── skills/               不动
 ├── ui/
-│   ├── panel/                 保留：面板与后台
-│   └── task_view/canvas.py    保留：画布，改数据源
-└── config/                    保留：身份、路径、产品配置
+│   ├── panel/                不动
+│   └── task_view/canvas.py   修改：读新增列
+└── config/                   不动
 </pre>
-<p><strong>删除：</strong><code>core/platform/work.py</code>（并入 <code>core/work</code>）、<code>core/platform/cards.py</code> 中状态权威部分、<code>core/network/roster.py</code>（并入协调工具）、旧派工入口与批量派工。</p>
+<p><strong>删除：</strong>实例覆盖字段的读写路径；以卡片文件为状态权威的读写；旧批量派工入口。没有其他删除。</p>
 
-<h2><span class="num">二</span>包职责与依赖方向</h2>
+<h2><span class="num">三</span>新增文件与类</h2>
 <table>
-  <thead><tr><th>包</th><th>职责</th><th>允许依赖</th></tr></thead>
+  <thead><tr><th>文件</th><th>类</th><th>职责</th><th>方法</th></tr></thead>
   <tbody>
-    <tr><td>core/work</td><td>配置与状态的唯一读写；事务；约束</td><td>platform（连接与路径）</td></tr>
-    <tr><td>core/network/coordination</td><td>把管理动作暴露成工具；参数校验</td><td>work、messaging</td></tr>
-    <tr><td>core/network/dispatch</td><td>启动检查、认领、释放、会话装配</td><td>work、platform、subagent</td></tr>
-    <tr><td>core/messaging</td><td>发布、订阅同步、接收、去重、暂存</td><td>work（只读订阅）、中心</td></tr>
-    <tr><td>core/context</td><td>打标签、隔离、技能候选</td><td>platform、subagent、documents</td></tr>
-    <tr><td>ui 与 cli</td><td>只读查询、会话输入</td><td>work、dispatch</td></tr>
+    <tr><td>messaging/client.py</td><td>CenterClient</td><td>与中心通信，本机与远程两种连接</td><td>send、health、pending</td></tr>
+    <tr><td>messaging/sync.py</td><td>SubscriptionSync</td><td>把数据库中的订阅推给中心，删除时撤销</td><td>apply_card、clear_card、apply_instance</td></tr>
+    <tr><td>messaging/inbox.py</td><td>Inbox</td><td>接收投递、按编号去重、注入实例会话</td><td>accept、seen、inject</td></tr>
+    <tr><td>context/tags.py</td><td>ExperienceTag</td><td>卡片结束时标记一段历史为经历</td><td>tag、list</td></tr>
+    <tr><td>context/isolation.py</td><td>HistoryIsolation</td><td>把选定历史收在一个根节点下，此后默认不展开</td><td>isolate、visible_roots</td></tr>
+    <tr><td>context/skills.py</td><td>SkillCandidate</td><td>技能候选的提交、复核与版本</td><td>propose、review、publish</td></tr>
   </tbody>
 </table>
-<p>依赖单向：cli/ui 依赖 work；coordination 依赖 work 与 messaging；work 不依赖任何上层。中间件（messaging）不依赖 coordination，避免循环。</p>
+<p>新增的三个目录各只有一个职责，不互相依赖；messaging 依赖订阅表，context 依赖历史层，两者都只读工作模型，不写卡片状态。</p>
 
-<h2><span class="num">三</span>类设计</h2>
-
-<h3>core/work</h3>
+<h2><span class="num">四</span>需要修改的现有文件</h2>
 <table>
-  <thead><tr><th>类</th><th>职责</th><th>主要方法</th></tr></thead>
+  <thead><tr><th>文件</th><th>改动</th><th>原因</th></tr></thead>
   <tbody>
-    <tr><td>WorkStore</td><td>连接、事务、约束开关；对上层隐藏连接细节</td><td>open、transaction、close、check_schema</td></tr>
-    <tr><td>Schema</td><td>建表与版本校验；不一致时拒绝启动</td><td>ensure、version、reset_for_development</td></tr>
-    <tr><td>TemplateTree</td><td>节点派生、查询、删除约束</td><td>derive(parent, config)、node(id, revision)、children、latest(id)、list(id)、delete_if_leaf</td></tr>
-    <tr><td>InstanceRegistry</td><td>三种创建输入、占用与释放、会话指针</td><td>create_from_node、create_from_patch、create_from_scratch、get、occupy、release、set_session、archive_session、list</td></tr>
-    <tr><td>RequestBook</td><td>请求的建立与版本推进</td><td>create、update(expected)、get、list_by_owner</td></tr>
-    <tr><td>CardBook</td><td>卡片、依赖、状态迁移、代次</td><td>save_plan、get、list_by_request、start、finish、cancel、bump_generation、ready_cards</td></tr>
-    <tr><td>SubscriptionBook</td><td>订阅的增删查；按归属批量替换</td><td>replace_for_card、clear_for_card、replace_for_instance、list</td></tr>
-    <tr><td>EventLog</td><td>追加与按卡片读取</td><td>append、list_by_card</td></tr>
-  </tbody>
-</table>
-
-<h3>core/network/coordination</h3>
-<table>
-  <thead><tr><th>类</th><th>职责</th><th>主要方法</th></tr></thead>
-  <tbody>
-    <tr><td>TaskTool</td><td>计划查询、保存、启动</td><td>show、save、start</td></tr>
-    <tr><td>RosterTool</td><td>模板与实例管理</td><td>show、create_template、derive_template、create_instance</td></tr>
-    <tr><td>SubscriptionTool</td><td>订阅管理（Last Order 自身与卡片）</td><td>show、set、drop</td></tr>
-    <tr><td>MessageTool</td><td>向实例或人发消息</td><td>send、publish</td></tr>
-  </tbody>
-</table>
-<p>四个类都只做参数校验与调用编排，业务约束在 work 层。工具装配时只注册给角色为 Last Order 的实例。</p>
-
-<h3>core/messaging</h3>
-<table>
-  <thead><tr><th>类</th><th>职责</th><th>主要方法</th></tr></thead>
-  <tbody>
-    <tr><td>CenterClient</td><td>与中心通信；本地通路与远程通路两种实现</td><td>send、health、pending</td></tr>
-    <tr><td>SubscriptionSync</td><td>把数据库里的订阅推给中心，删除时同步撤销</td><td>apply_card、clear_card、apply_instance</td></tr>
-    <tr><td>Inbox</td><td>接收投递、按编号去重、写入实例会话</td><td>accept、inject、seen</td></tr>
+    <tr><td>platform/work.py</td><td>模板表加父版本字段；实例表删除覆盖字段；增加订阅的增删查</td><td>版本树；实例不带覆盖；订阅归属卡片或实例</td></tr>
+    <tr><td>platform/instances.py</td><td>三种创建输入；装配时不再合并覆盖</td><td>同上</td></tr>
+    <tr><td>platform/tasks.py</td><td>卡片加文件范围与禁止命令两列；建订阅表；卡片状态迁移保持原样</td><td>权限的另一半放在卡片上</td></tr>
+    <tr><td>network/dispatch.py</td><td>启动前建立订阅，结束时删除；按卡片范围装配执行</td><td>订阅随卡片生命周期</td></tr>
+    <tr><td>network/worker.py</td><td>执行时读取范围与禁令</td><td>同上</td></tr>
+    <tr><td>network/messages.py</td><td>发送改为中心发布；接收改为去重后注入</td><td>通信走中心</td></tr>
+    <tr><td>network/wiring/network.py</td><td>Last Order 的工具表移除修改文件与执行命令两类</td><td>Last Order 不动手</td></tr>
+    <tr><td>network/wiring/coordination.py</td><td>增加订阅管理与发消息两个工具</td><td>管理入口</td></tr>
+    <tr><td>ui/task_view/canvas.py</td><td>读取新增列，显示范围与禁令</td><td>视图与数据一致</td></tr>
+    <tr><td>cli/view.py</td><td>同上</td><td>同上</td></tr>
   </tbody>
 </table>
 
-<h3>core/context</h3>
-<table>
-  <thead><tr><th>类</th><th>职责</th><th>主要方法</th></tr></thead>
-  <tbody>
-    <tr><td>ExperienceTag</td><td>卡片结束时标记一段历史为经历</td><td>tag、list</td></tr>
-    <tr><td>HistoryIsolation</td><td>把选定历史收在一个根节点下，此后默认不展开</td><td>isolate、visible_roots</td></tr>
-    <tr><td>SkillCandidate</td><td>提交技能候选、复核、生效与版本</td><td>propose、review、publish</td></tr>
-  </tbody>
-</table>
-
-<h3>执行与视图</h3>
-<table>
-  <thead><tr><th>类</th><th>职责</th><th>主要方法</th></tr></thead>
-  <tbody>
-    <tr><td>Dispatcher</td><td>启动前检查、认领事务、订阅建立、释放</td><td>start、claim、release</td></tr>
-    <tr><td>CardRunner</td><td>在实例会话中执行卡片，写产物与事件</td><td>run、abort</td></tr>
-    <tr><td>TaskView</td><td>只读查询，供画布与命令行共用</td><td>graph、card、instances、subscriptions</td></tr>
-    <tr><td>SessionHost</td><td>实例会话的打开、加锁、切换与归档</td><td>open、lock、rotate、archive</td></tr>
-  </tbody>
-</table>
-
-<h2><span class="num">四</span>表结构</h2>
+<h2><span class="num">五</span>表结构</h2>
+<p>只列改动的表；其余表保持现状。</p>
 <pre>
-templates(id, revision, parent_revision, role, config_json, created_at,
-          primary key(id, revision))
+templates(
+  id, revision, parent_revision, role, config_json, created_at,
+  primary key(id, revision)
+)
 
-instances(id, template_id, template_revision, label, retired,
-          session_epoch, session_file, agent_id, writer_pid, writer_identity, writer_token,
-          created_at,
-          foreign key(template_id, template_revision) references templates(id, revision))
+instances(
+  id, template_id, template_revision, label, retired,
+  session_epoch, session_file, agent_id, writer_pid, writer_identity, writer_token,
+  created_at,
+  foreign key(template_id, template_revision) references templates(id, revision)
+)
 
-instance_sessions(instance_id, epoch, session_file, archived_at,
-                  primary key(instance_id, epoch))
+tasks(
+  ...现有字段...,
+  fs_scope, forbidden_commands
+)
 
-work_requests(id, workspace, title, body, owner_id, revision, created_at,
-              foreign key(owner_id) references instances(id))
-
-tasks(id, request_id, instance_id, generation, title, body,
-      fs_scope, forbidden_commands,
-      reviewer, verdict, verdict_evidence,
-      status, workspace, priority, created_at, started_at, finished_at,
-      foreign key(request_id) references work_requests(id),
-      foreign key(instance_id) references instances(id))
-
-task_dependencies(child_id, parent_id, primary key(child_id, parent_id))
-
-subscriptions(id, card_id, instance_id, source, type, target, created_at,
-              check((card_id is null) != (instance_id is null)))
-
-events(id, task_id, kind, payload, generation, run_id, created_at)
-
-unique index instances_one_card on tasks(instance_id)
-  where status in ('running','review');
+subscriptions(
+  id, card_id, instance_id, source, type, target, created_at,
+  check((card_id is null) != (instance_id is null))
+)
 </pre>
-<p>约束：模板节点不可改；实例必须对应存在的节点；卡片必须属于请求；依赖只能同请求内且无环；一个实例同时只有一张执行中的卡片。</p>
+<p>约束照旧：实例必须对应存在的节点；一张卡片只绑一个实例；同一实例同时只有一张执行中的卡片；依赖同请求且无环。新增一条：不能删除仍有子节点或仍有实例依附的模板版本。</p>
 
-<h2><span class="num">五</span>关键调用顺序</h2>
-<p><strong>人说话。</strong>cli/chat → 会话 → 消息入 Inbox（本地输入不需要中心）→ Last Order 一轮 → TaskTool/RosterTool 写库。</p>
-<p><strong>事件到达。</strong>中心 → webhook → Inbox.accept（去重）→ 查询该目标的实例 → 注入实例会话；目标为 Last Order 时注入协调会话。</p>
-<p><strong>启动卡片。</strong>TaskTool.start → CardBook.start（校验代次与就绪）→ Dispatcher.start（校验身份、归属、实例空闲）→ SubscriptionSync.apply_card → 会话装配 → CardRunner.run。</p>
-<p><strong>结束卡片。</strong>CardRunner → CardBook.finish → SubscriptionSync.clear_card → Dispatcher.release → 事件追加。</p>
-<p><strong>建实例。</strong>RosterTool.create_instance → 三种输入之一 → TemplateTree.derive（需要时）→ InstanceRegistry.create → 返回编号与版本。</p>
-<p><strong>隔离历史。</strong>HistoryIsolation.isolate → 历史层建根节点 → 上下文组装时只取可见根。</p>
+<h2><span class="num">六</span>关键调用顺序</h2>
+<p><strong>事件到达。</strong>中心 → 本机回调 → Inbox.accept（按编号去重）→ 查到目标实例 → 注入会话。<br>
+<strong>启动卡片。</strong>协调工具 → 校验代次与就绪 → dispatch 认领 → SubscriptionSync.apply_card → 会话装配 → worker 执行。<br>
+<strong>结束卡片。</strong>worker → 状态落库 → SubscriptionSync.clear_card → 释放实例。<br>
+<strong>建实例。</strong>协调工具 → 三种输入之一 → 需要时先建版本节点 → 建实例并返回编号。<br>
+<strong>隔离历史。</strong>HistoryIsolation.isolate → 历史层建根 → 组装时只取可见根。</p>
 
-<h2><span class="num">六</span>阶段与文件级改动</h2>
+<h2><span class="num">七</span>阶段与顺序</h2>
 <table>
-  <thead><tr><th>阶段</th><th>文件</th><th>内容</th></tr></thead>
+  <thead><tr><th>阶段</th><th>文件</th><th>完成标志</th></tr></thead>
   <tbody>
-    <tr><td>零 清理</td><td>schema.py；删除 platform/work.py、platform/cards.py 的状态读写、network/roster.py</td><td>重建表；删除实例覆盖列；旧数据清空不迁移</td></tr>
-    <tr><td>一 模板与实例</td><td>templates.py、instances.py、schema.py；coordination/roster.py</td><td>父版本、三种创建输入、删除约束</td></tr>
-    <tr><td>二 卡片与订阅</td><td>cards.py、subscriptions.py、dispatch.py</td><td>范围与禁令字段；订阅随卡片建立与删除</td></tr>
-    <tr><td>三 工具面与视图</td><td>coordination/*、wiring/*、ui/task_view/canvas.py、cli/view.py</td><td>只给 Last Order 注册管理工具；移除文件与命令工具；视图改数据源</td></tr>
-    <tr><td>四 消息</td><td>messaging/*、wiring/*</td><td>发布、同步、接收、去重、暂存</td></tr>
-    <tr><td>五 上下文动作</td><td>context/*</td><td>标签、隔离、技能候选</td></tr>
-    <tr><td>六 清理</td><td>全局</td><td>删除旧入口、旧测试夹具、失效文档</td></tr>
+    <tr><td>零 清理</td><td>tasks.py、work.py、instances.py</td><td>从空库建库；无覆盖字段；无旧卡片文件读取</td></tr>
+    <tr><td>一 版本树</td><td>work.py、instances.py、wiring/coordination.py</td><td>三种输入各建一个实例；节点有父版本</td></tr>
+    <tr><td>二 卡片与订阅</td><td>tasks.py、dispatch.py、worker.py</td><td>启动建订阅，结束删订阅；范围与禁令落库</td></tr>
+    <tr><td>三 工具面</td><td>wiring/network.py、coordination.py</td><td>Last Order 无文件与命令工具；管理工具可用</td></tr>
+    <tr><td>四 通信</td><td>messaging/*、messages.py</td><td>事件能到达实例；重投不重复；人不回复无影响</td></tr>
+    <tr><td>五 上下文动作</td><td>context/*</td><td>标签、隔离、技能候选可用</td></tr>
+    <tr><td>六 视图</td><td>canvas.py、view.py</td><td>视图与数据库一致；引用进对话可读</td></tr>
   </tbody>
 </table>
 
-<h2><span class="num">七</span>验收</h2>
+<h2><span class="num">八</span>验收</h2>
 <ul>
   <li>从空目录建库并启动，确认无旧字段被读取。</li>
-  <li>三种输入各建一个实例，读取后确认节点与实例的对应关系。</li>
+  <li>三种输入各建一个实例，读取确认节点与实例的对应关系。</li>
   <li>建一张带订阅的卡片并启动，中心可查到订阅；结束后订阅消失。</li>
-  <li>Last Order 尝试修改文件与执行命令时工具不存在；建卡与启动可用。</li>
-  <li>视图与数据库一致；引用进对话后 Last Order 能读到对象。</li>
-  <li>实例异常终止后，卡片能换实例重新执行。</li>
+  <li>Last Order 尝试改文件与执行命令时工具不存在；建卡与启动可用。</li>
+  <li>关掉中心后本地仍可建卡与执行；恢复后消息补投且不重复。</li>
+  <li>视图与数据库一致；卡片换实例重新执行可继续。</li>
 </ul>
 
 <footer>
