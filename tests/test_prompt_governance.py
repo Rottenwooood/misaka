@@ -93,7 +93,7 @@ class PromptGovernanceTests(unittest.TestCase):
                 prompt = initial + "\n" + prompting.system_context(session, names, initial)
                 self.assertEqual(prompt.count(identity.COMMON_CHARTER), initial.count(identity.COMMON_CHARTER))
                 self.assertEqual(prompt.count(identity.COORDINATOR_ROLE), initial.count(identity.COORDINATOR_ROLE))
-                self.assertEqual(prompt.count(identity.COORDINATOR_APPROVAL), 1)
+                self.assertEqual(prompt.count(identity.RESEARCH_APPROVAL), 1)
                 self.assertEqual(prompt.count(identity.COORDINATOR_RECEIPTS), 1)
                 self.assertEqual(prompting.system_context(session, names, prompt), "")
         prompt = prompting.system_context(session, [], "")

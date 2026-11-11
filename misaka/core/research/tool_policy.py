@@ -1,7 +1,7 @@
 """Research inherits the session's tools; the driver owns ordinary Board mutations."""
 
 DRIVER_OWNED_TOOLS = frozenset({
-    "misaka_card", "misaka_dispatch", "misaka_sister", "misaka_card_link",
+    "misaka_task",
     "misaka_card_request_review", "misaka_card_review", "misaka_card_unblock",
     "misaka_card_requeue", "misaka_card_delete",
 })

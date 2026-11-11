@@ -48,7 +48,7 @@ else:
 # Wire protocol version (strict equality, as in herdr). Bump it whenever *server
 # behaviour* changes, not only method/event shapes: an unbumped behaviour change
 # once let a stale daemon slip through the version gate.
-PROTOCOL = 56   # Instance-owned sessions and persistent daemon execution.
+PROTOCOL = 57   # Owner- and generation-checked card dispatch.
 RING_CAP = 256 * 1024          # output tail kept per pane
 SEND_TIMEOUT = 8.0             # pane.send: how long a message may take to enter the pane before it counts as undelivered (under the client's 10 s request timeout)
 INPUT_TIMEOUT = 1.0            # pane.input: keystrokes and pastes wait this long, then stay queued (typing must not block the panel)
@@ -1797,38 +1797,44 @@ class Daemon:
         messages.send(self._mailbox(), row["instance_id"], text, summary=text[:80].strip() or "note",
                       sender="last-order", to_task=row["id"], generation=generation)
 
-    async def run_card(self, task_id, place=None) -> Pane:
+    async def run_card(self, task_id, place=None, *, owner_id=None, expected_generation=None) -> Pane:
         from misaka.core.platform import admission
         from misaka.core.platform import tasks as db
         async with self._card_lock(task_id):
-            return await self._run_card(task_id, place, admission=admission, db=db)
+            return await self._run_card(task_id, place, admission=admission, db=db,
+                                        owner_id=owner_id, expected_generation=expected_generation)
 
-    async def _run_card(self, task_id, place, *, admission, db) -> Pane:
+    async def _run_card(self, task_id, place, *, admission, db, owner_id, expected_generation) -> Pane:
         con = self._board()
-        row = db.get(con, task_id)
-        if row is None:
-            raise ValueError(f"Card not found: {task_id}")
-        if row["status"] != "ready":
-            raise ValueError(f"Card {task_id} is not ready (current status: {row['status']}).")
+        from misaka.core.platform import work
         from misaka.core.network import worker
         if worker.over_cap(_expand(CFG["db"]), task_id, CFG["token_cap"]):
             # The research run's cap is spent: the card is not started and stays ready.
             raise ValueError(f"Card {task_id} was not started: {worker.budget_cap_reason()}.")
-        # A card requeued while its last window is still open runs in that window again.
-        reuse = self._card_pane_to_reuse(task_id)
-        from misaka.core.network.ally import presets
-        if row["assignee"] not in presets.names():     # an ally's runner says itself why it cannot start
-            from misaka.core.platform import work
-            actor = work.instance(con, row["instance_id"])
-            if actor["retired"]:
-                raise ValueError(f"Instance {actor['id']} is retired; reassign its unstarted cards")
-        generation = int(row["generation"])
-        lock = f"net:{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
-        host_cap, assignee_cap = admission.limits()
-        if not db.claim(con, task_id, lock,
-                        generation=generation, pid=os.getpid(),
-                        host_cap=host_cap, assignee_cap=assignee_cap):
-            raise ValueError(db.claim_refusal(task_id) or f"Card {task_id} was claimed by another dispatcher.")
+        with db.write_txn(con):
+            if owner_id is not None:
+                work.coordinator(con, owner_id)
+                row = work.dispatch_target(con, owner_id, task_id, expected_generation)
+            else:
+                row = db.get(con, task_id)
+            if row is None:
+                raise ValueError(f"Card not found: {task_id}")
+            if row["status"] != "ready":
+                raise ValueError(f"Card {task_id} is not ready (current status: {row['status']}).")
+            # A card requeued while its last window is still open runs in that window again.
+            reuse = self._card_pane_to_reuse(task_id)
+            from misaka.core.network.ally import presets
+            if row["assignee"] not in presets.names():     # an ally's runner says itself why it cannot start
+                actor = work.instance(con, row["instance_id"])
+                if actor["retired"]:
+                    raise ValueError(f"Instance {actor['id']} is retired; reassign its unstarted cards")
+            generation = int(row["generation"])
+            lock = f"net:{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"
+            host_cap, assignee_cap = admission.limits()
+            if not db.claim(con, task_id, lock,
+                            generation=generation, pid=os.getpid(),
+                            host_cap=host_cap, assignee_cap=assignee_cap):
+                raise ValueError(db.claim_refusal(task_id) or f"Card {task_id} was claimed by another dispatcher.")
         undo = lambda: db.back_to_ready(con, task_id, generation=generation, claim_lock=lock)
         return await self._host_card(con, row, lock, generation, card_program(row), place,
                                      undo=undo, reuse=reuse)
@@ -2211,7 +2217,10 @@ class Daemon:
             return {"pane_id": pane.id, "pid": pane.proc.pid}
         if method == "pane.run_card":
             # Hosting a card waits for the pane it takes over; `_serve_client` awaits it.
-            return self._hosted(self.run_card(params["task_id"], place=params.get("place")))
+            return self._hosted(self.run_card(
+                params["task_id"], place=params.get("place"), owner_id=params.get("owner_id"),
+                expected_generation=params.get("expected_generation"),
+            ))
         if method == "pane.open_card_session":
             return self._hosted(self.open_card_session(params["task_id"], place=params.get("place")))
         if method == "pane.continue_card":

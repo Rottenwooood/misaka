@@ -41,7 +41,7 @@ class CollaborationPromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("`last-order` or a registered Sister ID", text)
         self.assertIn("may wake a contact session", text)
         self.assertIn("do not create, start, complete or park a card", text)
-        self.assertNotIn("misaka_card", text)
+        self.assertNotIn("misaka_task", text)
         self.assertNotIn("misaka_sister_message", text)
         self.assertNotIn("request_input=true", text)  # card-only protocol remains tool-owned
         self.assertNotIn("## Sub-agents", text)
@@ -50,8 +50,8 @@ class CollaborationPromptTests(unittest.IsolatedAsyncioTestCase):
         names = [name for name in collaboration.SISTER_TOOLS if not name.startswith("misaka_research_")]
         part = self.make_part(names)
         text = (await part.before_agent_start({"systemPrompt": "BASE"}, None))["systemPrompt"]
-        for phrase in ("creation does not start work", "task ID and current generation", "parked card's help request",
-                       "not through SendMessage", "independent reviewer", "real dependency"):
+        for phrase in ("Saving a plan does not start work", "task ID and current generation", "parked card's help request",
+                       "not through SendMessage", "independent reviewer"):
             self.assertIn(phrase, text)
         self.assertNotIn("misaka_research_assign", text)
         for name in names:
@@ -63,7 +63,7 @@ class CollaborationPromptTests(unittest.IsolatedAsyncioTestCase):
         text = (await part.before_agent_start({"systemPrompt": "BASE"}, None))["systemPrompt"]
         self.assertIn("driver creates and launches", text)
         self.assertIn("Do not duplicate those assignments", text)
-        for name in ("SendMessage", "misaka_card", "misaka_dispatch", "misaka_sister", "Agent"):
+        for name in ("SendMessage", "misaka_task", "Agent"):
             self.assertNotIn(f"`{name}`", text)
         for name in names:
             self.assertIn(f"`{name}`", text)

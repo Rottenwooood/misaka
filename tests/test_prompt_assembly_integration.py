@@ -172,7 +172,7 @@ async def test_custom_system_and_live_tool_selection(prompt_home, role):
         messages = await final_prompt(session)
         assert messages.count("## Last Order / Sister coordination") == 1
         assert "`last-order` or a registered Sister ID" in messages
-        assert "- `misaka_card`:" not in messages
+        assert "- `misaka_task`:" not in messages
         assert "- `misaka_sister_message`:" not in messages
         if role != "last_order":
             session.setActiveToolsByName(["TaskOutput"])
@@ -223,7 +223,7 @@ async def test_role_entry_keeps_shared_base_and_explicit_tool_ceiling(prompt_hom
         assert text.count(identity.COMMON_CHARTER) == text.count(identity.COORDINATOR_ROLE) == 1
         assert "Fixture voice for last_order." in text
         assert set(session.getActiveToolNames()) == {"read"}
-        session.setActiveToolsByName(["read", "bash", "misaka_card"])
+        session.setActiveToolsByName(["read", "bash", "misaka_task"])
         assert set(session.getActiveToolNames()) == {"read"}  # Research never lifts CLI permission ceilings
         assert text.count("## Sister capability profiles") == 1
         assert "## Sub-agents" not in text and "## Allies" not in text
@@ -246,7 +246,7 @@ async def test_research_scope_keeps_enabled_user_questions(prompt_home, tools):
         allowed = planner.RESEARCH_TOOLS if tools == "planning" else planner.MATERIAL_TOOLS
         names = planner.session_tools(SimpleNamespace(session=session), allowed)
         assert "AskUserQuestion" in names
-        assert "misaka_card" not in names  # retaining questions must not reopen Board mutation
+        assert "misaka_task" not in names  # retaining questions must not reopen Board mutation
         with session.toolScope(list(names)):
             assert "AskUserQuestion" in session.getActiveToolNames()
             assert "- AskUserQuestion:" in await final_prompt(session)
@@ -299,10 +299,10 @@ async def test_lo_entrypoints_share_actual_default_tools_and_complete_prompt(pro
             with ExitStack() as scope:
                 initial = session.getActiveToolNames()
                 assert {"AskUserQuestion", "SendMessage"} <= set(initial)
-                assert ("misaka_card" in initial) == (not research)
+                assert ("misaka_task" in initial) == (not research)
                 if research:
                     scope.enter_context(session.toolScope(list(planner.session_tools(SimpleNamespace(session=session)))))
-                    assert "misaka_card" not in session.getActiveToolNames()
+                    assert "misaka_task" not in session.getActiveToolNames()
                     assert "AskUserQuestion" in session.getActiveToolNames()
                 tools.append(session.getActiveToolNames())
                 texts.append(await final_prompt(session))
@@ -362,8 +362,8 @@ async def test_research_role_keeps_tools_without_stealing_root_notifications(pro
         parts = session.moments.parts
         assert not any(isinstance(p, (NodePart, ResearchPart)) for p in parts)
         network = next(p for p in parts if isinstance(p, NetworkPart))
-        assert "misaka_card" not in session.getActiveToolNames()
-        assert "misaka_board" in session.getActiveToolNames()
+        assert "misaka_task" not in session.getActiveToolNames()
+        assert "misaka_roster" in session.getActiveToolNames()
         network._resume_briefing = AsyncMock()
         network._settle_orphans = AsyncMock()
         network._collect_pending = AsyncMock()
@@ -383,7 +383,7 @@ async def test_research_inherits_order_and_preserves_selection_through_lifecycle
 
     async with assembled(prompt_home, "last_order", "foreground") as session:
         normal = session.getActiveToolNames()
-        assert len(DRIVER_OWNED_TOOLS) == 9
+        assert "misaka_task" in DRIVER_OWNED_TOOLS
         assert DRIVER_OWNED_TOOLS <= set(normal)
         # Configured permission ceiling is not permission to revive a user-disabled tool.
         monkeypatch.setattr(session, "_allowedToolNames", set(normal) | {"fixture_late", "misaka_research_assign"})
@@ -394,7 +394,7 @@ async def test_research_inherits_order_and_preserves_selection_through_lifecycle
         assert session.getActiveToolNames() == expected
         assert list(planner.session_tools(owner)) == expected
         assert {"misaka_sister_stop", "misaka_sister_message", "skill_manage",
-                "misaka_board", "SendMessage"} <= set(expected)
+                "misaka_roster", "SendMessage"} <= set(expected)
         for name in DRIVER_OWNED_TOOLS:
             result = await session.agent.beforeToolCall({"toolCall": {"name": name}, "args": {}})
             assert result["block"]

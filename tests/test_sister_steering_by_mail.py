@@ -39,7 +39,7 @@ def world(tmp_path, monkeypatch, request):
     monkeypatch.setattr(network, "_pane_for_card",
                         lambda task_id: {"id": "p7", "card": task_id, "alive": True, "claimed": True})
     collector = ToolCollector()
-    network._install(collector, SisterRuntime(None, lambda: con, dict))
+    network._install(collector, SisterRuntime(None, lambda: con))
     tool = next(t for t in collector.tools if t.name == "misaka_sister_message")
     ctx = SimpleNamespace(cwd=str(tmp_path), sessionManager=SimpleNamespace(sessionId=SESSION))
 

@@ -180,7 +180,7 @@ def describe(sid, root=None):
     except ValueError as error:
         # DESCRIBE.md is a file people are told to edit by hand, and parse_frontmatter raises
         # FrontmatterError (a ValueError) on malformed YAML. Every caller here walks the *whole*
-        # roster -- the /sister menu, misaka_board's roster line, the chat banner -- so letting
+        # roster -- the /sister menu and the chat banner -- so letting
         # one member's typo out would take down the entire list. The description line alone is
         # read as written first: `misaka create --desc` wrote it unquoted before 0.18.7, so any
         # description with a colon in it is in exactly this state. Only when that line is not

@@ -14,10 +14,9 @@ SISTER_TOOLS = {
                     "Owned sub-agent IDs/names are resolved before those names. "
                     "Ordinary messages do not create, start, complete or park a card."),
     "misaka_sister_view": "Read a registered Sister's introduction to choose a collaborator.",
-    "misaka_board": "Check this project's actual task-card states and ownership.",
-    "misaka_card": "Create a scoped assignment with testable acceptance criteria; creation does not start work.",
-    "misaka_dispatch": "Start approved ready cards; select task IDs to avoid dispatching unrelated ready work.",
-    "misaka_sister": "Start one approved ready card, not a new Sister identity or generic sub-agent.",
+    "misaka_task": ("Read or save your work plans and start named ready cards explicitly. "
+                    "Saving a plan does not start work. Follow user instructions for plan presentation and interaction."),
+    "misaka_roster": "Manage templates and registered instances; a template revision leaves existing pins unchanged.",
     "misaka_sister_message": ("Address an existing card by task ID and current generation to steer or continue its session. "
                               "Reply to a parked card's help request here, not through SendMessage; "
                               "observe the tool's confirmation requirement for completed tasks."),
@@ -27,7 +26,6 @@ SISTER_TOOLS = {
     "misaka_pane_list": "See the panes in your tab of the panel and which of them may be closed.",
     "misaka_pane_close": ("Close what finished cards left in your tab; a pane running a card is stopped with "
                           "misaka_sister_stop, and a pane the user opened is closed only at their request."),
-    "misaka_card_link": "Record a real dependency between existing task cards.",
     "misaka_card_request_review": "Configure a different Sister as an independent reviewer before work starts.",
     "misaka_card_review": "Record the independent review decision and actionable feedback through the review contract.",
     "misaka_my_card": "Read your card's current contract, dependency and review state.",

@@ -324,6 +324,10 @@ async def test_last_order_without_a_panel_hands_an_ally_card_to_the_daemon(make,
     calls = []
     monkeypatch.setattr(client, "ensure", lambda: calls.append("ensure"))
     monkeypatch.setattr(client, "request", lambda method, params=None: calls.append((method, params)) or {"pane_id": "p9"})
-    result = await SisterRuntime(None, lambda: ally.con, current_config).launch(ally.tid, context=None, tool_call_id="c")
-    assert calls == ["ensure", ("pane.run_card", {"task_id": ally.tid})]
+    from misaka.core.platform import work
+    owner = work.request(ally.con, ally.row["request_id"])["owner_id"]
+    result = await SisterRuntime(None, lambda: ally.con).launch(
+        ally.tid, owner_id=owner, expected_generation=ally.row["generation"])
+    assert calls == ["ensure", ("pane.run_card", {"task_id": ally.tid, "owner_id": owner,
+                                                "expected_generation": ally.row["generation"]})]
     assert result["launched"] is True and result["pane"] == "p9"

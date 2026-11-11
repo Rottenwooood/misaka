@@ -14,7 +14,7 @@ from xml.sax.saxutils import escape
 
 import psutil
 
-from misaka.core.platform import admission, notifications
+from misaka.core.platform import notifications
 from misaka.core.platform import processes as process_tree
 from misaka.core.platform import tasks as db
 from misaka.core.subagent.child import PROCESS_GROUP_IDENTITY
@@ -183,17 +183,13 @@ def _sister_notification(data: Mapping[str, Any]) -> str:
 
 
 class SisterRuntime:
-    def __init__(self, session, con_factory, cfg_factory):
+    def __init__(self, session, con_factory):
         self.session = session
-        self._con_factory, self._cfg_factory = con_factory, cfg_factory
+        self._con_factory = con_factory
 
     @property
     def con(self):
         return self._con_factory()
-
-    @property
-    def cfg(self):
-        return self._cfg_factory()
 
     @staticmethod
     async def _request(method, params):
@@ -201,36 +197,13 @@ class SisterRuntime:
         await asyncio.to_thread(net.ensure)
         return await asyncio.to_thread(net.request, method, params)
 
-    def _reconcile(self, task_ids=None, workspace=None):
-        from misaka.core.network.dispatch import reconcile
-        reconcile(self.con, self.cfg, task_ids=task_ids, workspace=workspace)
-
-    async def launch(self, task_id, *, context, tool_call_id, on_update=None):
-        await asyncio.to_thread(self._reconcile, [task_id])
-        params = {"task_id": task_id}
+    async def launch(self, task_id, *, owner_id, expected_generation):
+        params = {"task_id": task_id, "owner_id": owner_id,
+                  "expected_generation": expected_generation}
         if pane := os.environ.get("MISAKA_NET_PANE"):
             params["place"] = {"grid": pane}
         result = await self._request("pane.run_card", params)
         return self.snapshot(task_id, launched=True) | {"pane": result["pane_id"]}
-
-    async def launch_ready(self, *, context, tool_call_id, on_update=None, task_ids=None,
-                           workspace=None, validate_tasks=None):
-        await asyncio.to_thread(self._reconcile, task_ids, workspace)
-        host_cap, _ = admission.limits()
-        free = max(0, host_cap - len(db.by_status(self.con, "running"))) if host_cap else 100
-        rows = await asyncio.to_thread(db.fair_ready, self.con, limit=free,
-                                       lane="workers", workspace=workspace) if task_ids is None else []
-        wanted = list(dict.fromkeys(task_ids if task_ids is not None else [r["id"] for r in rows]))
-        if validate_tasks:
-            validate_tasks(wanted)
-        out = []
-        for task_id in wanted:
-            try:
-                out.append(await self.launch(task_id, context=context, tool_call_id=tool_call_id,
-                                              on_update=on_update))
-            except Exception as error:  # noqa: BLE001 - report per-card failures without losing other launch receipts
-                out.append({"task_id": task_id, "status": "error", "error": str(error)})
-        return out
 
     async def message(self, task_id, message, *, summary, confirmed, expected_generation, context):
         from misaka.core.network import messages

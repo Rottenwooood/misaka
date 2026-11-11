@@ -62,7 +62,7 @@ async def test_a_stopped_card_comes_back_as_a_fresh_attempt(board, tmp_path, req
     assert row["claim_lock"] is None and row["worker_pid"] is None
     assert task_id in result and "ready" in result
     # Nothing polls for ready cards, so the reply must not imply the work restarts by itself.
-    assert "not running yet" in result and "misaka_dispatch" in result
+    assert "not running yet" in result and "misaka_task" in result
     kinds = [r["kind"] for r in board.execute("SELECT kind FROM events WHERE task_id=?", (task_id,))]
     assert "reopened" in kinds
 

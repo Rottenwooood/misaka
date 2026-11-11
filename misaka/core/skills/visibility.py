@@ -47,7 +47,7 @@ def environment_detector(*, kind=None, active=None):
         if tag == "kanban":
             # A Board card owns its task. Ordinary delegates must not inherit
             # that verdict merely by inheriting a parent's process environment.
-            return kind == "card" or (kind != "child" and "misaka_board" in (active or ()))
+            return kind == "card" or (kind != "child" and "misaka_roster" in (active or ()))
         if tag == "docker":
             return _detect_container()
         if tag == "s6":

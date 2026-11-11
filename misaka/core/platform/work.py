@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS work_requests (
  created_at INTEGER NOT NULL
 );
 """
+CARD_ID_PATTERN = r"^t_[0-9a-f]{6}$"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 
 
@@ -175,7 +176,7 @@ def update_plan(con, request_id, expected_revision, changes):
             if not isinstance(change, dict):
                 raise TypeError("Each card change must be an object")
             tid = identifier(change.get("id"))
-            if not re.fullmatch(r"t_[0-9a-f]{6}", tid):
+            if not re.fullmatch(CARD_ID_PATTERN, tid):
                 raise ValueError("Card IDs use t_ followed by six hex digits")
             if tid in seen:
                 raise ValueError(f"Repeated card change: {tid}")
@@ -429,9 +430,7 @@ def apply(con, operations):
     return results
 
 
-def state(con):
-    from misaka.core.platform import tasks
-
+def roster(con):
     templates = []
     for row in con.execute("SELECT * FROM templates ORDER BY id,revision"):
         item = dict(row)
@@ -443,6 +442,14 @@ def state(con):
             instance(con, r["id"])
             for r in con.execute("SELECT id FROM instances ORDER BY id")
         ],
+    }
+
+
+def state(con):
+    from misaka.core.platform import tasks
+
+    return {
+        **roster(con),
         "requests": [
             dict(r) for r in con.execute("SELECT * FROM work_requests ORDER BY id")
         ],
@@ -451,3 +458,86 @@ def state(con):
             for r in con.execute("SELECT * FROM card_state ORDER BY request_id,id")
         ],
     }
+
+
+def owned_request(con, owner, request_id):
+    current = request(con, request_id)
+    if current["owner_id"] != owner:
+        raise ValueError(f"Request {request_id} is not owned by this Last Order")
+    return current
+
+
+def ordinary_cards(con, card_ids):
+    """Research-owned cards must be edited and launched by their driver."""
+    from misaka.core.research import runs
+
+    if not card_ids:
+        return
+    contexts = runs.task_contexts(con)
+    for card_id in card_ids:
+        if context := contexts.get(card_id):
+            raise ValueError(
+                f"Card {card_id} belongs to research run {context['run_id']}; "
+                "its driver owns the plan and execution. "
+                f"Use the current Research tools or /research resume {context['run_id']}."
+            )
+
+
+def owned_state(con, owner, request_id=None):
+    from misaka.core.platform import tasks
+
+    if request_id is None:
+        return {"requests": [dict(row) for row in con.execute(
+            "SELECT id,title,workspace,revision FROM work_requests WHERE owner_id=? ORDER BY created_at,id", (owner,)
+        )]}
+    current = owned_request(con, owner, request_id)
+    fields = ("id", "title", "body", "instance_id", "model", "reviewer", "priority",
+              "status", "generation", "review_feedback", "block_reason")
+    rows = con.execute("SELECT * FROM card_state WHERE request_id=? ORDER BY created_at,id", (request_id,))
+    return {"request": current, "cards": [
+        {key: row[key] for key in fields} | {"needs": tasks.parent_ids(con, row["id"])}
+        for row in rows
+    ]}
+
+
+def save_plan(con, owner, request_id, *, expected_revision=None, workspace=None,
+              title=None, body=None, cards=None):
+    from misaka.core.platform import tasks
+
+    with tasks.write_txn(con):
+        if expected_revision is None:
+            current, = apply(con, [{"op": "request.create", "id": request_id, "owner_id": owner,
+                                    "workspace": workspace, "title": title, "body": body or ""}])
+        else:
+            current = owned_request(con, owner, request_id)
+            _revision(con, request_id, expected_revision)
+            if workspace is not None:
+                raise ValueError("An existing request cannot change its project directory")
+        if cards:
+            ordinary_cards(con, [card["id"] for card in cards] +
+                           [parent for card in cards for parent in (card.get("needs") or [])])
+            current = update_plan(con, request_id, current["revision"], cards)
+        if expected_revision is not None and (title is not None or body is not None):
+            # A single save increments the revision once, even if it edits both metadata and cards.
+            con.execute(
+                "UPDATE work_requests SET title=?,body=?,revision=? WHERE id=?",
+                (_text(title, "title") if title is not None else current["title"],
+                 body if body is not None else current["body"],
+                 expected_revision + 1, request_id),
+            )
+        return request(con, request_id)
+
+
+def dispatch_target(con, owner, card_id, generation):
+    from misaka.core.platform import tasks
+
+    row = tasks.get(con, card_id)
+    if row is None:
+        raise ValueError(f"Card not found: {card_id}")
+    owned_request(con, owner, row["request_id"])
+    ordinary_cards(con, [card_id])
+    if row["generation"] != generation:
+        raise ValueError(f"Card {card_id} generation changed; read the current plan")
+    if row["status"] != "ready":
+        raise ValueError(f"Card {card_id} is not ready (current status: {row['status']})")
+    return row

@@ -19,7 +19,7 @@ def board(tmp_path):
 
 
 def runtime(con):
-    rt = sister_runtime.SisterRuntime(None, lambda: con, dict)
+    rt = sister_runtime.SisterRuntime(None, lambda: con)
     rt._request = AsyncMock(return_value={"pane_id": "worker-pane"})
     return rt
 

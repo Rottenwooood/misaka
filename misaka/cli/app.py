@@ -429,7 +429,7 @@ def _cmd_task(args):
 
 
 def _task_add(con, title, args):
-    """A card made by hand: the front door, checks and defaults of Last Order's ``misaka_card``."""
+    """A card made by hand through the shared task store."""
     from misaka.core.network import roster, validate
     from misaka.core.platform import cards as card_files
     body = args.body

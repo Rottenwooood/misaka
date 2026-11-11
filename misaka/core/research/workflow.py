@@ -343,7 +343,7 @@ async def _submit_tasks(con, run, node, specs, *, kind, progress=None, round=1, 
                 con.execute("DELETE FROM research_run_tasks WHERE task_id=?", (existing["task_id"],))
             template = con.execute("SELECT revision FROM templates WHERE id=? AND role='sister' ORDER BY revision DESC LIMIT 1", (spec["assignee"],)).fetchone()
             if template is None:
-                raise ValueError(f"Register Sister template {spec['assignee']} with misaka_state before research")
+                raise ValueError(f"Register Sister template {spec['assignee']} with misaka_roster before research")
             instance_id = "i_" + secrets.token_hex(6)
             work.apply(con,[{"op":"instance.create","id":instance_id,"template_id":spec["assignee"],
                              "template_revision":template['revision']}])

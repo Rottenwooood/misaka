@@ -1,33 +1,27 @@
-"""Last Order's task-board tools.
-
-Last Order plans and delegates through task cards. Starting model work is a separate, user-confirmed action.
-"""
+"""Last Order’s board tools and durable card notifications."""
 import asyncio
 import json
 import os
 import secrets
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from misaka.config import CFG, current_config, sisters
 from misaka.config.identity import (
-    COORDINATOR_APPROVAL,
     COORDINATOR_BOARD_STATUS,
     COORDINATOR_RECEIPTS,
 )
-from misaka.core.network import validate
+from misaka.core.network.wiring import coordination
 from misaka.core.network.sister_runtime import SisterRuntime
-from misaka.core.platform import budget, toolkit, work
+from misaka.core.platform import toolkit, work
 from misaka.core.platform import tasks as db
 from misaka.core.platform.prompt_guard import untrusted
 from misaka.core.research.tool_policy import DRIVER_OWNED_TOOLS
 from misaka.core.wiring import ToolCollector
 
 _CON = None
-# How many board rows one `misaka_board` result carries.
-_BOARD_LIMIT = 40
-TaskId = Annotated[str, Field(pattern=r"^t_[0-9a-f]{6}$")]
+TaskId = Annotated[str, Field(pattern=work.CARD_ID_PATTERN)]
 
 
 def _session_id(ctx):
@@ -91,11 +85,6 @@ def _sisters():
     return sorted(sisters())
 
 
-def _allies():
-    from misaka.core.network.ally import presets
-    return presets.names()
-
-
 def _workspace(ctx):
     return db.canonical_workspace(getattr(ctx, "cwd", None))
 
@@ -142,20 +131,8 @@ def _require_project_tasks(ctx, args):
 
 
 def _require_ordinary_tasks(task_ids):
-    """A normal Board entry point must not take over cards owned by a research run."""
-    if not task_ids:
-        return
-    from misaka.core.research import runs
-
-    contexts = runs.task_contexts(_con())
-    for task_id in task_ids:
-        context = contexts.get(task_id)
-        if context:
-            raise ValueError(
-                f"Card {task_id} belongs to research run {context['run_id']}; its driver owns "
-                "assignment, dependencies and review. Use the current research phase tools, "
-                f"or ask the user to run /research resume {context['run_id']} for a paused run."
-            )
+    if task_ids:
+        work.ordinary_cards(_con(), task_ids)
 
 
 def _register(harn, name, label, description, parameters, snippet=None, guidelines=None):
@@ -178,8 +155,10 @@ def _register(harn, name, label, description, parameters, snippet=None, guidelin
     )
 
 
-def _install(harn, runtime):
+def _install(harn, runtime, owner_id=None):
     """Register the board tools on ``harn`` (a ToolCollector) against ``runtime``."""
+
+    coordination.install(harn, runtime, _con, owner_id)
 
     class StrictParams(BaseModel):
         model_config = ConfigDict(extra="forbid")
@@ -189,126 +168,6 @@ def _install(harn, runtime):
             None, ge=1,
             description="For a contact-session help request, supply its generation with its task ID; required to read that card outside its project.",
         )
-
-    class BoardParams(BaseModel):
-        status: str | None = Field(None, description=(
-            "Optional task status: todo, ready, running, blocked, triage, review, "
-            "done, failed, or stopped."
-        ))
-
-
-    @_register(
-        harn,
-        name="misaka_board", label='board',
-        description="List this project folder's task cards and their states, the Sister roster, and token usage.",
-        snippet="View the Misaka task board and Sister roster",
-        parameters=BoardParams)
-    async def misaka_board(tool_call_id, params, signal, on_update, ctx):
-        con = _con()
-        workspace = _workspace(ctx)
-        from misaka.core.platform import cards as card_files
-        rows = card_files.board(con, workspace)
-        if params.status:
-            rows = [r for r in rows if r["status"] == params.status]
-        # Keep this board result bounded.
-        # project with more than 40 cards keeps exactly the strays and drops every real
-        # card without saying so. Truncation stays (the tool result is model context),
-        # but it is named, and the count is the pre-truncation one.
-        total = len(rows)
-        rows = rows[-_BOARD_LIMIT:]
-        mine = _session_line(ctx)
-        lines = [f"{'*' if r['origin_session'] in mine else ' '} {r['id']}  "
-                 f"{r['status']:<10} {r['assignee']:<14} {r['title'][:50]}"
-                 + (f"  [{r['signal']}]" if r.get("signal") else "")
-                 + ("  (no card file in the project)" if r.get("missing_file") else "")
-                 for r in rows]
-        if total > len(rows):
-            lines.insert(0, f"(showing the last {len(rows)} of {total} cards)")
-        if mine and any(line.startswith("*") for line in lines):
-            lines.append("* = created in this conversation")
-        # The cap is each research run's (``/research status`` reads a run against it); the board's
-        # total is everything recorded, contact turns and plain cards included, and has no mode.
-        spent = budget.spent(con)
-        from misaka.core.network import roster as roster_mod
-        named = ", ".join(
-            f"{s} ({roster_mod.describe_line(s, root=_cfg()['profiles_root']) or 'no description'})"
-            for s in _sisters())
-        allies = ", ".join(sorted(roster_mod.allies()))
-        header = (
-            f"Sister roster: {named or '(empty)'}"
-            f"{' (use misaka_sister_view for introduction excerpts)' if named else ''}\n"
-            + (f"Allies (external agents, assigned cards like a Sister): {allies}\n" if allies else "") +
-            f"Tokens recorded on this board: {spent:,} (research.token_cap applies to each research run)\n\n"
-        )
-        return _text(header + ("\n".join(lines) if lines else "(no task cards)"))
-
-
-    class StateParams(BaseModel):
-        action: Literal["show", "apply"] = "show"
-        operations: list[dict[str, Any]] | None = Field(None, description=
-            "Atomic operation list. template.create: id, role(last-order|sister), config; "
-            "template.revise: id, expected_revision, config; instance.create: id, template_id, template_revision, optional overrides/label; "
-            "request.create: id, title, workspace, owner_id, optional body; request.update: id, expected_revision, optional title/body/owner_id; "
-            "plan.update: request_id, expected_revision, cards. Each new card: id(t_ + six hex), title, body with ## acceptance criteria, instance_id, needs[]. "
-            "Existing ready/todo/held cards may change these fields or cancel:true. Running/completed work needs lifecycle handling or follow-up cards.")
-
-    @_register(harn, name="misaka_state", label="Work state",
-               description="Inspect templates, instances and requests, or atomically edit them and card DAGs. Plan edits require expected_revision; this never starts models.",
-               parameters=StateParams)
-    async def misaka_state(tool_call_id, params, signal, on_update, ctx):
-        result = work.state(_con()) if params.action == "show" else work.apply(_con(), params.operations)
-        return _text(json.dumps(result,ensure_ascii=False))
-
-    class CardParams(BaseModel):
-        title: str = Field(description="Short task-card title.")
-        body: str = Field(description="Task contract: `## goal`, `## boundaries`, and a required, testable `## acceptance criteria` section.")
-        request_id: str = Field(description="Owning work request identity from misaka_state.")
-        instance_id: str = Field(description="Sister instance identity from misaka_state.")
-        reviewer: str | None = Field(
-            None, description="Optional independent reviewer; must be a different Sister from the assignee."
-        )
-        priority: int = Field(0, description="Relative priority; higher values run first.")
-        model: str | None = Field(
-            None, description="Model for this card only, in the form `misaka create --model` takes; "
-                              "default: the Sister's own configured model."
-        )
-
-
-    @_register(
-        harn,
-        name="misaka_card", label="Create task card",
-        description="Create a durable Sister task with explicit scope and testable acceptance criteria; this does not start work.",
-        snippet="Create a Sister task card with goal, boundaries, and acceptance criteria",
-        guidelines=[
-            "The body should contain `## goal` and `## boundaries`, and must contain `## acceptance criteria` with verifiable outcomes (the only section that is validated).",
-            COORDINATOR_APPROVAL,
-        ],
-        parameters=CardParams)
-    async def misaka_card(tool_call_id, params, signal, on_update, ctx):
-        con = _con()
-        executor = work.instance(con, params.instance_id)
-        cards, errs = validate.validate_cards(
-            [{"title": params.title, "body": params.body, "assignee": executor["template_id"],
-              "priority": params.priority, "model": params.model}],
-            {executor["template_id"]})
-        if errs:
-            raise ValueError(';'.join(errs))
-        if params.reviewer and params.reviewer not in set(_sisters()):
-            raise ValueError(f"Reviewer {params.reviewer} is not in the Sister roster.")
-        if params.reviewer == executor["template_id"]:
-            raise ValueError("The reviewer must be different from the assignee.")
-        c = cards[0]
-        from misaka.core.platform import cards as card_files
-        tid = card_files.create(con, _workspace(ctx), c["title"], c["body"], params.instance_id,
-                                request_id=params.request_id, model=c["model"], priority=c["priority"],
-                                reviewer=params.reviewer, origin_session=_session_id(ctx))
-        review = f" → reviewer {params.reviewer}" if params.reviewer else ""
-        return _text(
-            f"Added {tid}: {c['title']} → {c['assignee']}{review}.\n"
-            "Work has not started. Wait for explicit user approval, then call "
-            "misaka_dispatch or misaka_sister."
-        )
-
 
     class ReviewConfigParams(StrictParams):
         task_id: TaskId
@@ -403,107 +262,8 @@ def _install(harn, runtime):
         if params.decision == "approve":              # the card is done; there is nothing to relaunch
             state = db.get(con, params.task_id)["status"]
             return _text(f"Review recorded: approve; the card is done ({state}).")
-        follow = await runtime.launch_ready(
-            context=ctx, tool_call_id=tool_call_id, on_update=on_update,
-            task_ids=[params.task_id], workspace=_workspace(ctx),
-        )
-        state = follow[0].get("status") if follow else db.get(con, params.task_id)["status"]
-        outcome = "the card is done" if params.decision == "approve" else "sent back for revision"
-        return _text(f"Review recorded: {params.decision}; {outcome} ({state}).")
 
-
-    class DispatchParams(StrictParams):
-        confirmed: bool = Field(description="True only when the user explicitly approved starting model work.")
-        task_ids: list[TaskId] | None = Field(
-            None, description="Optional list of ready task IDs; omit to start every ready task."
-        )
-
-
-    @_register(
-        harn,
-        name="misaka_dispatch", label="Start approved work",
-        description="Start ready Sister task cards. This spends model quota and requires explicit user approval.",
-        snippet="Start ready task cards after explicit user approval",
-        guidelines=[COORDINATOR_APPROVAL],
-        parameters=DispatchParams)
-    async def misaka_dispatch(tool_call_id, params, signal, on_update, ctx):
-        if not params.confirmed:
-            return _text("Work was not started. Show the plan and wait for explicit user approval.")
-        con = _con()
-        workspace = _workspace(ctx)
-        ready = len(db.by_status(con, "ready", workspace=workspace))
-        if not ready:
-            return _text("No task cards are ready to run.")
-        if on_update:
-            on_update({"content": [{"type": "text", "text": f"Starting {ready} card(s)…"}], "details": {}})
-        if os.environ.get("MISAKA_NET_PANE"):
-            # Start worker cards in visible panes, a tab each.
-            from misaka.ui.panel import client as net
-            wanted = set(params.task_ids) if params.task_ids is not None else None
-            lines, started = [], 0
-            # Reconciliation is filesystem work; keep it off the session's loop.
-            picked = await asyncio.to_thread(db.fair_ready, con, lane="workers", workspace=workspace)
-            picked = [row for row in picked if wanted is None or row["id"] in wanted]
-            _require_ordinary_tasks([row["id"] for row in picked])
-            for row in picked:
-                try:
-                    out = await asyncio.to_thread(
-                        net.request, "pane.run_card",
-                        {"task_id": row["id"], "place": {"grid": os.environ["MISAKA_NET_PANE"]}})
-                    started += 1
-                    lines.append(f"""  {row['id']} → {row['assignee']}  pane {out['pane_id']}""")
-                except Exception as error:  # noqa: BLE001 - report individual launch failures
-                    lines.append(f"  {row['id']} failed to start: {error}")
-            return _text(f"Started {started} card(s) in network panes:\n" + "\n".join(lines))
-        results = await runtime.launch_ready(
-            context=ctx,
-            tool_call_id=tool_call_id,
-            on_update=on_update,
-            task_ids=params.task_ids,
-            workspace=workspace,
-            validate_tasks=_require_ordinary_tasks,
-        )
-        if not results:
-            return _text("No cards were started.")
-        lines = []
-        for item in results:
-            if item.get("status") == "error":
-                lines.append(f"  {item['task_id']} failed to start: {item['error']}")
-            else:
-                lines.append(
-                    f"  {item['task_id']} → {item['sister']}  {item['status']}"
-                )
-        started = sum(item.get("status") not in ("error", "queued") for item in results)
-        queued = sum(item.get("status") == "queued" for item in results)
-        return _text(
-            f"Started {started} card(s)" + (f", {queued} queued for capacity" if queued else "")
-            + "; completion handling is automatic:\n" + "\n".join(lines)
-        )
-
-
-    class SisterParams(StrictParams):
-        task_id: TaskId = Field(description="Ready task-card ID to start.")
-        confirmed: bool = Field(description="True only when the user explicitly approved starting model work.")
-
-
-    @_register(
-        harn,
-        name="misaka_sister", label="Start Sister task",
-        description="Start one ready task card and return its durable task ID. This is separate from generic subagents.",
-        snippet="Start one Sister task after explicit user approval",
-        guidelines=[COORDINATOR_APPROVAL],
-        parameters=SisterParams)
-    async def misaka_sister(tool_call_id, params, signal, on_update, ctx):
-        if not params.confirmed:
-            return _text("Work was not started. Show the plan and wait for explicit user approval.")
-        result = await runtime.launch(
-            params.task_id,
-            context=ctx,
-            tool_call_id=tool_call_id,
-            on_update=on_update,
-        )
-        return _text(json.dumps(result, ensure_ascii=False))
-
+        return _text(f"Review recorded: changes requested; {params.task_id} has not restarted.")
 
     class SisterOutputParams(CardReadParams):
         # The default is the non-blocking read. Progress arrives on its own as a
@@ -671,7 +431,7 @@ def _install(harn, runtime):
                 return _text(f"Card {params.task_id} never ran: it was stopped before its first turn, so "
                              "there is no session to show. misaka_sister_message (confirmed=true) starts "
                              "its first attempt with your note; misaka_card_requeue puts it back in the "
-                             "queue for misaka_dispatch.")
+                             "queue for misaka_task with action=start.")
         out = await asyncio.to_thread(
             net.request, "pane.open_card_session",
             {"task_id": params.task_id, "place": {"grid": os.environ["MISAKA_NET_PANE"]}})
@@ -788,25 +548,6 @@ def _install(harn, runtime):
             context=ctx,
         )
         return _text(json.dumps(result, ensure_ascii=False))
-
-
-    class CardLinkParams(StrictParams):
-        parent_id: TaskId = Field(description="Parent task-card ID that must finish first.")
-        child_id: TaskId = Field(description="Child task-card ID that waits for the parent.")
-
-    @_register(
-        harn,
-        name="misaka_card_link", label="Link task dependency",
-        description="Make one unfinished task depend on another; self-links, cycles, and active children are rejected.",
-        snippet="Create a parent-to-child task dependency",
-        parameters=CardLinkParams)
-    async def misaka_card_link(tool_call_id, params, signal, on_update, ctx):
-        created = db.link_tasks(_con(), params.parent_id, params.child_id)
-        state = db.get(_con(), params.child_id)["status"]
-        return _text(
-            f"{'Linked' if created else 'Dependency already exists'}: "
-            f"{params.parent_id} → {params.child_id} (child is now {state})."
-        )
 
 
     class CardCommentsParams(CardReadParams):
@@ -930,7 +671,7 @@ def _install(harn, runtime):
                     "user with /research resume.",
         snippet="Requeue a stopped or failed card",
         guidelines=[COORDINATOR_BOARD_STATUS + " Requeue a stopped or failed card with misaka_card_requeue, and "
-                    "ask the user first. Requeueing only puts the card back in the queue; misaka_dispatch is what "
+                    "ask the user first. Requeueing only puts the card back in the queue; misaka_task with action=start is what "
                     "starts it."],
         parameters=CardRequeueParams)
     async def misaka_card_requeue(tool_call_id, params, signal, on_update, ctx):
@@ -955,8 +696,8 @@ def _install(harn, runtime):
             )
         row = db.get(con, params.task_id)
         # Nothing polls for ready cards: every attempt is started by somebody asking for it.
-        waiting = ("Start it with misaka_dispatch once the user approves." if row["status"] == "ready"
-                   else "It waits at todo until the cards it depends on finish, then misaka_dispatch "
+        waiting = ("Use misaka_task action=start when it should run." if row["status"] == "ready"
+                   else "It waits at todo until the cards it depends on finish, then misaka_task with action=start "
                         "starts it.")
         return _text(f"Card {params.task_id} is back at {row['status']} as attempt "
                      f"{row['generation']}, and is not running yet. {waiting}")
@@ -987,7 +728,7 @@ def _install(harn, runtime):
         return _text(msg)
 
     class SisterViewParams(StrictParams):
-        sister: str = Field(description="Sister ID from the `misaka_board` roster.")
+        sister: str = Field(description="Sister ID from the registered Sister roster.")
 
     @_register(
         harn,
@@ -1014,14 +755,14 @@ class NetworkPart:
     # is announced within seconds of settling rather than at Last Order's next turn.
     PENDING_POLL_SECONDS = 5.0
 
-    def __init__(self, *, receive_notifications=True):
+    def __init__(self, *, receive_notifications=True, owner_id=None):
         self.session = None
         self.commands = []
         self.receive_notifications = receive_notifications
         self._pending_watch = None
-        self.runtime = SisterRuntime(None, _con, _cfg)
+        self.runtime = SisterRuntime(None, _con)
         collector = ToolCollector()
-        _install(collector, self.runtime)
+        _install(collector, self.runtime, owner_id)
         self.tools = collector.tools
 
     def attach(self, session):
@@ -1134,4 +875,5 @@ ROLES = {"last_order"}
 
 def part(spec):
     notifications = spec.receive_notifications
-    return NetworkPart(receive_notifications=spec.receive_messages if notifications is None else notifications)
+    return NetworkPart(receive_notifications=spec.receive_messages if notifications is None else notifications,
+                       owner_id=spec.instance_id)

@@ -24,11 +24,10 @@ ROLE_IDENTITY = {
 
 # Tool-level coordination rules. Charters state responsibilities, not a second
 # copy of the dispatch protocol; the builder deduplicates identical tool rules.
-COORDINATOR_APPROVAL = (
-    "In ordinary board chat, lay out the created cards and their boundaries, then wait for the user's go-ahead "
-    "before starting work that costs money. In Research, follow the current phase's approval gate: "
-    "recording a plan is not approval to execute it, and ancestor approval does not approve a new plan "
-    "when plan approval is enabled. Do not invent an extra gate when the workflow allows automatic execution."
+RESEARCH_APPROVAL = (
+    "In Research, follow the current phase's approval gate: recording a plan is not approval to execute it, "
+    "and ancestor approval does not approve a new plan when plan approval is enabled. "
+    "Do not invent an extra gate when the workflow allows automatic execution."
 )
 COORDINATOR_RECEIPTS = (
     'Dispatch tools only launch work in the background. Never report "started" as "done". '
