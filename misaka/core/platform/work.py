@@ -71,6 +71,40 @@ def _text(value, field):
     return value.strip()
 
 
+def _string_list(value, field):
+    """A list of unique nonempty strings, or nothing."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        raise ValueError(f"{field} must be a list of nonempty strings")
+    return list(dict.fromkeys(item.strip() for item in value))
+
+
+def _subscription_specs(value):
+    """Card subscriptions: source, type and an optional target, nothing else."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("subscriptions must be a list")
+    specs = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) - {"source", "type", "target"}:
+            raise ValueError(
+                "Each subscription takes source, type and an optional target"
+            )
+        target = item.get("target")
+        if target is not None and (not isinstance(target, str) or not target.strip()):
+            raise ValueError("A subscription target must be nonempty text")
+        specs.append({
+            "source": _text(item.get("source"), "subscription source"),
+            "type": _text(item.get("type"), "subscription type"),
+            "target": target.strip() if target else None,
+        })
+    return specs
+
+
 def _json(value):
     if not isinstance(value, dict):
         raise TypeError("Configuration must be an object")
@@ -218,6 +252,9 @@ def update_plan(con, request_id, expected_revision, changes):
                 "model",
                 "reviewer",
                 "cancel",
+                "fs_scope",
+                "forbidden_commands",
+                "subscriptions",
             }
             if set(change) - allowed:
                 raise ValueError(
@@ -245,6 +282,9 @@ def update_plan(con, request_id, expected_revision, changes):
                 raise ValueError("The reviewer must be different from the assignee")
             if "cancel" in change and type(change["cancel"]) is not bool:
                 raise ValueError("cancel must be boolean")
+            fs_scope = _string_list(values.get("fs_scope"), "fs_scope")
+            forbidden = _string_list(values.get("forbidden_commands"), "forbidden_commands")
+            specs = _subscription_specs(change.get("subscriptions"))
             if row is None:
                 tasks.create_task(
                     con,
@@ -257,10 +297,13 @@ def update_plan(con, request_id, expected_revision, changes):
                     model=values.get("model"),
                     reviewer=values.get("reviewer"),
                     task_id=tid,
+                    fs_scope=fs_scope,
+                    forbidden_commands=forbidden,
                 )
             else:
                 con.execute(
-                    "UPDATE tasks SET title=?,body=?,instance_id=?,priority=?,model=?,reviewer=?,generation=generation+1 WHERE id=?",
+                    "UPDATE tasks SET title=?,body=?,instance_id=?,priority=?,model=?,reviewer=?,"
+                    "fs_scope=?,forbidden_commands=?,generation=generation+1 WHERE id=?",
                     (
                         title,
                         body,
@@ -268,6 +311,8 @@ def update_plan(con, request_id, expected_revision, changes):
                         values.get("priority", 0),
                         values.get("model"),
                         values.get("reviewer"),
+                        None if fs_scope is None else json.dumps(fs_scope),
+                        None if forbidden is None else json.dumps(forbidden),
                         tid,
                     ),
                 )
@@ -280,6 +325,8 @@ def update_plan(con, request_id, expected_revision, changes):
                         "model",
                         "reviewer",
                         "priority",
+                        "fs_scope",
+                        "forbidden_commands",
                     )
                 }
                 previous["needs"] = tasks.parent_ids(con, tid)
@@ -293,6 +340,15 @@ def update_plan(con, request_id, expected_revision, changes):
                         "previous_contract": previous,
                     },
                 )
+            if "subscriptions" in change:
+                con.execute("DELETE FROM subscriptions WHERE card_id=?", (tid,))
+                for index, spec in enumerate(specs):
+                    con.execute(
+                        "INSERT INTO subscriptions(id,card_id,instance_id,source,type,target,created_at) "
+                        "VALUES(?,?,NULL,?,?,?,?)",
+                        (f"sub_{tid[2:]}_{index}", tid, spec["source"], spec["type"],
+                         spec["target"], int(time.time())),
+                    )
             if change.get("cancel"):
                 con.execute(
                     "UPDATE tasks SET status='stopped',completed_at=? WHERE id=?",
@@ -559,10 +615,16 @@ def owned_state(con, owner, request_id=None):
         )]}
     current = owned_request(con, owner, request_id)
     fields = ("id", "title", "body", "instance_id", "model", "reviewer", "priority",
-              "status", "generation", "review_feedback", "block_reason")
+              "status", "generation", "review_feedback", "block_reason",
+              "fs_scope", "forbidden_commands")
     rows = con.execute("SELECT * FROM card_state WHERE request_id=? ORDER BY created_at,id", (request_id,))
     return {"request": current, "cards": [
-        {key: row[key] for key in fields} | {"needs": tasks.parent_ids(con, row["id"])}
+        {key: row[key] for key in fields} | {
+            "needs": tasks.parent_ids(con, row["id"]),
+            "subscriptions": [dict(item) for item in con.execute(
+                "SELECT source,type,target FROM subscriptions WHERE card_id=? ORDER BY id",
+                (row["id"],))],
+        }
         for row in rows
     ]}
 

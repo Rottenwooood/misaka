@@ -20,6 +20,12 @@ class ShowTask(Command):
     request_id: str | None = Field(None, description="Omit for a list of your requests across projects.")
 
 
+class CardSubscription(Command):
+    source: str
+    type: str
+    target: str | None = None
+
+
 class PlanCard(Command):
     id: CardId
     title: str | None = None
@@ -29,6 +35,9 @@ class PlanCard(Command):
     priority: int | None = None
     model: str | None = None
     reviewer: str | None = None
+    fs_scope: list[str] | None = Field(None, description="Paths this card may touch.")
+    forbidden_commands: list[str] | None = Field(None, description="Command patterns this card must not run.")
+    subscriptions: list[CardSubscription] | None = None
     cancel: bool = False
 
 
