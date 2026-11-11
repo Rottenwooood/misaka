@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设计</title>
+<style>
+  :root{--ink:#22262b;--ink-soft:#4a5158;--muted:#787f87;--paper:#fcfbf8;--panel:#f4f1ea;--rule:#e0dbd1;--accent:#8a5a3b;--accent-soft:#b98a68}
+  *{box-sizing:border-box}
+  body{margin:0;padding:4.5rem 1.5rem 7rem;background:var(--paper);color:var(--ink);
+    font-family:"Noto Serif CJK SC","Source Han Serif SC","Songti SC","AR PL UMing CN",Georgia,serif;font-size:16.5px;line-height:1.9}
+  main{max-width:44rem;margin:0 auto}
+  h1,h2,h3,.meta,th{font-family:"Noto Sans CJK SC","Source Han Sans SC","PingFang SC","Microsoft YaHei",sans-serif}
+  h1{font-size:1.8rem;line-height:1.45;margin:0 0 .4rem;font-weight:600}
+  .subtitle{font-size:1rem;color:var(--ink-soft);margin:0 0 1.4rem;line-height:1.75}
+  .meta{font-size:.82rem;color:var(--muted);margin:0 0 2.4rem;padding-bottom:1.2rem;border-bottom:1px solid var(--rule)}
+  h2{font-size:1.14rem;font-weight:600;margin:3.2rem 0 .9rem;padding-top:1.4rem;border-top:1px solid var(--rule);line-height:1.5}
+  h2 .num{color:var(--accent-soft);margin-right:.55rem}
+  p{margin:0 0 1rem}
+  ul,ol{margin:0 0 1.1rem;padding-left:1.45rem}
+  li{margin:.3rem 0}
+  li::marker{color:var(--accent-soft)}
+  table{width:100%;border-collapse:collapse;margin:.6rem 0 1.5rem;font-size:.88rem;line-height:1.7}
+  th{text-align:left;font-weight:600;font-size:.82rem;color:var(--ink-soft);background:var(--panel);border-bottom:1px solid var(--rule);padding:.55rem .7rem}
+  td{border-bottom:1px solid var(--rule);padding:.6rem .7rem;vertical-align:top}
+  td:first-child{font-weight:600;white-space:nowrap}
+  .box{background:var(--panel);border-left:3px solid var(--accent-soft);padding:1.1rem 1.4rem .5rem;margin:1.3rem 0 1.6rem}
+  .note{font-size:.88rem;color:var(--muted);line-height:1.75;margin:-.2rem 0 1.5rem;padding-left:.9rem;border-left:2px solid var(--rule)}
+  footer{margin-top:3.4rem;padding-top:1.3rem;border-top:1px solid var(--rule);font-size:.82rem;color:var(--muted)}
+  @media (max-width:640px){body{padding:2.6rem 1.15rem 4rem;font-size:16px}td:first-child{white-space:normal}}
+  @media print{body{background:#fff;padding:0;font-size:11pt}h2{break-after:avoid}table,.box{break-inside:avoid}}
+</style>
+</head>
+<body>
+<main>
+
+<h1>设计</h1>
+<p class="subtitle">这个系统有哪些对象、每个对象的行为与边界、结构上必须成立的条件，以及为此付出的代价。不含文件与类，不含安装与运维。</p>
+<p class="meta">2026 年 11 月　·　三份文档之一</p>
+
+<h2><span class="num">一</span>目标</h2>
+<p>把 MISAKA 改造成以 Last Order 为入口的代理框架。输入是人的话或订阅事件；Last Order 被唤起后只能做管理动作，不能修改文件、不能执行命令；执行由依附模板版本的实例完成。</p>
+<p>系统提供能力，不规定方法。任务怎么拆、要不要监督、由谁验收，都属于提示与模型能力，不进入机制。这一条决定了后面所有取舍：凡是把某种做事方法写进状态机或流程的设计，都不做。</p>
+<p>明确不做：编排引擎、验收流程、超时与重试策略、多层权限链、旧数据兼容、多机共享同一份状态。</p>
+
+<h2><span class="num">二</span>对象</h2>
+<table>
+  <thead><tr><th>对象</th><th>是什么</th><th>创建者</th><th>归属</th><th>活多久</th></tr></thead>
+  <tbody>
+    <tr><td>人</td><td>唯一的需求来源</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>Last Order</td><td>入口代理实例，只做管理</td><td>人</td><td>数据库</td><td>长期，可换会话</td></tr>
+    <tr><td>模板节点</td><td>某角色某一版本的全部配置</td><td>Last Order</td><td>所属模板</td><td>永久，不可改</td></tr>
+    <tr><td>实例</td><td>依附某个模板节点的执行者</td><td>Last Order</td><td>数据库</td><td>可跨多张卡片复用</td></tr>
+    <tr><td>请求</td><td>人的一次要求</td><td>Last Order</td><td>请求所属的人与项目</td><td>到相关卡片结束</td></tr>
+    <tr><td>卡片</td><td>一次子任务的完整表示</td><td>Last Order</td><td>所属请求</td><td>到任务结束</td></tr>
+    <tr><td>订阅</td><td>一条投递规则</td><td>Last Order</td><td>卡片或实例</td><td>随归属对象</td></tr>
+    <tr><td>消息</td><td>一次投递</td><td>任意参与者</td><td>中心</td><td>持久</td></tr>
+    <tr><td>历史</td><td>实例的完整经历</td><td>执行层</td><td>实例</td><td>长期</td></tr>
+    <tr><td>技能</td><td>一条可复用的方法</td><td>实例或 Last Order</td><td>技能库</td><td>长期，可修订</td></tr>
+  </tbody>
+</table>
+<p>对象之间只有一个强绑定关系：实例依附模板节点。其余关系都是引用，可以断开而不破坏对方。</p>
+
+<h2><span class="num">三</span>一次输入的生命周期</h2>
+<p>输入到达有三种来源：人在会话里说话、订阅事件命中、人从视图里引用一个对象后说话。三者最终都变成一条消息，进入同一个会话。</p>
+<ol>
+  <li><strong>唤起</strong>：消息进入 Last Order 的会话，触发一轮处理。没有消息就没有轮次，系统不轮询。</li>
+  <li><strong>理解与决定</strong>：Last Order 判断这次要不要做事。它可以只回答人，也可以什么都不写。系统不要求每次输入都产出卡片。</li>
+  <li><strong>管理动作</strong>：需要做事时，它创建或修改请求、卡片、依赖、订阅，或创建模板节点与实例。这些动作一次提交，提交前校验引用、依赖无环、实例存在、路径合法。</li>
+  <li><strong>启动</strong>：卡片不会因为被写下而开始。启动是一次单独的显式动作，携带卡片编号与执行代次。</li>
+  <li><strong>执行</strong>：实例在自己的会话中完成卡片，在卡片声明的项目目录里改文件、跑命令，产物留在项目里。</li>
+  <li><strong>结束</strong>：卡片进入完成或失败；订阅删除；实例释放，仍可被后续卡片复用。</li>
+  <li><strong>呈现</strong>：视图从数据库读出最新状态；人可以在视图中看到，也可以引用某个对象继续对话。</li>
+</ol>
+<p>事件输入与人的输入只差一步：事件不需要人转述，直接进入会话；人可以在任何时候插话，两者在同一条会话里排队处理。</p>
+
+<h2><span class="num">四</span>模板版本树</h2>
+<p>模板是一个命名的配置序列，配置本身不可变。每次修改产生一个新节点，节点记录父节点。因此一个模板的全部版本构成一棵树。</p>
+<ul>
+  <li>任意节点都可以派生新节点，默认从最新节点派生。</li>
+  <li>不合并两个节点，不改写已有节点的内容或父节点。</li>
+  <li>不能删除仍有子节点或仍有实例依附的节点。</li>
+  <li>实例固定在一个节点上，不随最新节点移动。</li>
+</ul>
+<p>为什么是树而不是线性序列：需要同时保留几条不同的配置路线时，线性序列只能覆盖最新一条，旧路线会被迫重新录入。为什么不做合并：合并要解决两个配置之间的冲突，收益低，复杂度高。</p>
+<p>创建实例有三种输入，都只产生一个实例：只给一个已有节点，直接用它的配置；给一个已有节点加修改参数，先在该节点下建新节点，再建依附它的实例；给全部参数，从零建节点，再建依附它的实例。第二种是日常用法，第三种用于新建一类角色。</p>
+<p class="note">第二种输入会产生一个只被一个实例使用的节点。这是有意的：任何差异都留下可复现的记录，而不是藏在实例里。</p>
+
+<h2><span class="num">五</span>实例</h2>
+<p>实例是执行者，也是上下文的持有者。它记录：编号、标签、依附的模板节点、会话指针、会话代次、当前占用的卡片、写者身份。</p>
+<p>规则：</p>
+<ul>
+  <li>编号唯一且稳定，出现在它发出的每条消息与每条执行记录中。</li>
+  <li>同一时刻只服务一张卡片。已经开工的卡片即使停在中途，也继续占用实例。</li>
+  <li>可以被多张卡片先后复用；跨项目复用意味着工作目录随卡片切换，而会话与历史连续。</li>
+  <li>只有 Last Order 能创建实例。</li>
+  <li>实例本身不带配置覆盖。任何配置差异都在模板节点上。</li>
+</ul>
+<p>为什么实例要独立于卡片：卡片是一次性的，实例是持续的。若上下文跟着卡片，则每张卡都要重建历史，复用无从谈起；若上下文跟着实例而实例又绑死一张卡，则实例无法承担第二件事。</p>
+
+<h2><span class="num">六</span>卡片</h2>
+<p>卡片是一次子任务的完整表示，字段为：所属请求、任务描述与文字边界、绑定实例、执行代次、文件系统范围、禁止命令、订阅、依赖、结论与依据、状态。</p>
+<p>状态有五个：待决、就绪、执行中、完成、失败、取消。迁移只有这些：</p>
+<table>
+  <thead><tr><th>从</th><th>到</th><th>条件</th></tr></thead>
+  <tbody>
+    <tr><td>待决</td><td>就绪</td><td>全部前置卡片完成</td></tr>
+    <tr><td>就绪</td><td>执行中</td><td>显式启动，且检查通过</td></tr>
+    <tr><td>执行中</td><td>完成 或 失败</td><td>执行结束</td></tr>
+    <tr><td>未完成</td><td>取消</td><td>人通过 Last Order 表达</td></tr>
+  </tbody>
+</table>
+<p>前置失败或取消不算完成，因此不会让后续卡片就绪。这是唯一由系统保证的推进规则。</p>
+<p>执行代次是并发保护：卡片在未开工时被修改，代次加一；启动必须携带当前代次，过期的启动请求被拒绝。这样修改与启动不会交错。</p>
+<p>卡片必须自足：换一个实例重新执行时，仅凭卡片内容就能继续。凡是依赖某个实例私有记忆才能继续的卡片，视为卡片没写清任务。</p>
+<p>产物属于项目，不属于实例。删除实例不删除产物，也不删除卡片。</p>
+
+<h2><span class="num">七</span>权限：两件不同的事</h2>
+<p>模板决定能力：有哪些工具、加载哪些技能、用哪个模型、会话如何装配。</p>
+<p>卡片决定范围：可以访问哪些文件路径、禁止执行哪些命令。</p>
+<p>两者互不约束，也不构成上下层。它们回答不同的问题：能做什么，与能碰哪里。</p>
+<p>Last Order 不能修改文件、不能执行命令，靠的是它的模板里根本没有这些工具，而不是靠检查。这样不需要在运行时判断意图，也不会因为提示被改写而失效。</p>
+<p class="note">禁止命令列表先加上，用于装配与记录；是否在运行时拦截，按实际需要再定，不作为当前设计前提。</p>
+
+<h2><span class="num">八</span>消息与三条通路</h2>
+<p>通信由一个中心完成，单向投递，不含请求应答的配对语义。回复就是另一条消息。</p>
+<p>三条通路：事件到实例、实例到实例、实例与 Last Order 之间（含人与 Last Order）。人的输入只由 Last Order 接收；Last Order 要把话交给某个实例时，自己发一条。</p>
+<p>中心只认三件事：发送者身份、订阅条件、投递目标。它不知道卡片、项目、角色，也不解释内容。</p>
+<p>投递规则：</p>
+<ul>
+  <li>接收者空闲时逐条投递。</li>
+  <li>接收者忙碌或消息密集时，按该接收者的最高触发频率合并；一批携带全部消息，顺序保留，每条保留原编号。</li>
+  <li>合并只减少触发次数，不减少内容，不丢弃。</li>
+  <li>重投按消息编号识别，同一条只进入上下文一次。</li>
+</ul>
+<p>人不回复没有任何后果：消息留在中心，实例不被唤醒，Last Order 也不等待。人回复后那是一条新消息。</p>
+<p>订阅属于卡片时随卡片结束删除；Last Order 自身的订阅挂在它的实例上，只在人要求时增删。</p>
+
+<h2><span class="num">九</span>上下文</h2>
+<p>实例运行期间持续使用历史。历史无损：原始记录完整保留、可检索、可展开。进入模型窗口的是被选入的内容与层级摘要，不是唯一的副本。</p>
+<p>卡片结束时给这段历史打标签，标记为一次经历。实例保留，不因卡片结束清空。</p>
+<p>两个独立动作：</p>
+<ul>
+  <li><strong>隔离</strong>：把选定的一段历史收在一个根节点下。此后的上下文组装默认不展开它；子内容完整保留，需要时检索。</li>
+  <li><strong>整理为技能</strong>：产生一条带适用范围与版本的方法，复核后生效。</li>
+</ul>
+<p>两个动作可以由实例自己、Last Order、人或另一个实例发起。它们是动作，不是流程：系统不规定何时做、由谁做、做几次。</p>
+<p>Last Order 的历史过深时换会话。新会话不带旧细节，当前状态从数据库读取；旧历史保留，按需访问。</p>
+
+<h2><span class="num">十</span>界面</h2>
+<p>界面只有两处：会话窗口与状态视图。</p>
+<p>会话窗口是与 Last Order 说话的地方。人可以引用一张卡片或一个实例，引用之后 Last Order 看到被引用对象及其状态。</p>
+<p>状态视图显示请求、卡片、依赖、实例、订阅。它是只读的：数据来自数据库查询，不持有状态，不写任何表，不直接调用执行层。修改只能通过对话表达，由 Last Order 的工具落库。</p>
+<p>只读是有意的：写入只有一个入口，才不会出现两处同时改同一事实。视图刷新即可看到最新状态。</p>
+<p>命令行查询与图形视图是同一份数据的两处显示，用于没有图形界面的环境。</p>
+
+<h2><span class="num">十一</span>失败</h2>
+<table>
+  <thead><tr><th>情形</th><th>行为</th></tr></thead>
+  <tbody>
+    <tr><td>中心不可用</td><td>本地动作照常；消息在发送端暂存，恢复后重投；重投按编号去重</td></tr>
+    <tr><td>实例异常终止</td><td>记录一条事件；卡片可绑定另一个实例重新开始</td></tr>
+    <tr><td>启动与修改并发</td><td>代次不一致时拒绝启动，由发起方重新读取后再提交</td></tr>
+    <tr><td>Last Order 会话过长</td><td>换会话；状态从数据库读，历史保留</td></tr>
+    <tr><td>数据库不可用</td><td>整个系统停止写；视图显示不可用；不做降级写入</td></tr>
+    <tr><td>卡片长期无进展</td><td>系统不判定，也不介入；由人或 Last Order 决定是否取消</td></tr>
+  </tbody>
+</table>
+
+<h2><span class="num">十二</span>必须成立的条件</h2>
+<div class="box">
+<ol>
+  <li>每个实例依附一个模板节点；节点不可变；实例不随最新节点移动。</li>
+  <li>一张卡片在执行期只绑定一个实例；一个实例在同一时刻只服务一张卡片。</li>
+  <li>只有 Last Order 能创建模板节点、实例与卡片。</li>
+  <li>Last Order 的工具集中没有修改文件与执行命令。</li>
+  <li>模板决定能力，卡片决定范围，两者互不约束。</li>
+  <li>消息单向，中心不解释内容。</li>
+  <li>卡片的订阅随卡片结束删除；Last Order 的订阅随其实例存在。</li>
+  <li>历史无损；窗口是选择，不是唯一副本。</li>
+  <li>产物属于项目；删除实例不删除产物。</li>
+  <li>视图只读；写入只有 Last Order 一个入口。</li>
+</ol>
+</div>
+
+<h2><span class="num">十三</span>取舍与代价</h2>
+<table>
+  <thead><tr><th>选择</th><th>理由</th><th>代价</th></tr></thead>
+  <tbody>
+    <tr><td>不做编排引擎</td><td>拆分与验收是提示与模型的事，写死会把一种方法变成全部方法</td><td>质量依赖提示与模型；系统不保证任务拆得对</td></tr>
+    <tr><td>实例不带覆盖</td><td>差异留下可复现的记录</td><td>小差异也要建节点，版本树会长</td></tr>
+    <tr><td>卡片五态</td><td>只保留推进所需的规则</td><td>无法表达“等待外部条件”这类中间状态，由实例空闲体现</td></tr>
+    <tr><td>消息单向</td><td>不引入应答状态，失败面小</td><td>调用方自己判断何时需要后续消息</td></tr>
+    <tr><td>中心独立</td><td>投递是通用问题，复用已有实现</td><td>依赖外部包与它的部署方式</td></tr>
+    <tr><td>数据库单机</td><td>配置与状态同源</td><td>不支持多机共享；扩容需要替换存储层</td></tr>
+    <tr><td>视图只读</td><td>避免第二个写入者</td><td>人不能在界面上直接拖线，必须通过对话</td></tr>
+  </tbody>
+</table>
+
+<h2><span class="num">十四</span>部署对架构的约束</h2>
+<p>中心是独立进程，因此架构必须允许它在另一台机器上运行：本机走本地通路，远程走加密的 HTTP，身份用令牌表达，不能依赖同机共享内存或文件锁。</p>
+<p>数据库是单机文件，因此系统不提供多机共享同一份状态；需要多机时只能把整个数据目录放在同一台机器上，其余机器通过中心通信。</p>
+<p>历史与产物都在本地目录，因此备份与迁移以目录为单位；中心只保存消息队列，不保存任务与历史。</p>
+<p>Last Order 的会话是长连接进程，因此需要能被重启而不丢状态；重启后从数据库读取当前状态，从历史库读取上下文。</p>
+
+<footer>
+  <p>本文只写设计。文件与类见第二份，安装与运维见第三份。</p>
+</footer>
+
+</main>
+</body>
+</html>

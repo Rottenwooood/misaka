@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>部署</title>
+<style>
+  :root{--ink:#22262b;--ink-soft:#4a5158;--muted:#787f87;--paper:#fcfbf8;--panel:#f4f1ea;--rule:#e0dbd1;--accent:#8a5a3b;--accent-soft:#b98a68}
+  *{box-sizing:border-box}
+  body{margin:0;padding:4.5rem 1.5rem 7rem;background:var(--paper);color:var(--ink);
+    font-family:"Noto Serif CJK SC","Source Han Serif SC","Songti SC","AR PL UMing CN",Georgia,serif;font-size:16.5px;line-height:1.9}
+  main{max-width:44rem;margin:0 auto}
+  h1,h2,h3,.meta,th{font-family:"Noto Sans CJK SC","Source Han Sans SC","PingFang SC","Microsoft YaHei",sans-serif}
+  h1{font-size:1.8rem;line-height:1.45;margin:0 0 .4rem;font-weight:600}
+  .subtitle{font-size:1rem;color:var(--ink-soft);margin:0 0 1.4rem;line-height:1.75}
+  .meta{font-size:.82rem;color:var(--muted);margin:0 0 2.4rem;padding-bottom:1.2rem;border-bottom:1px solid var(--rule)}
+  h2{font-size:1.14rem;font-weight:600;margin:3.2rem 0 .9rem;padding-top:1.4rem;border-top:1px solid var(--rule);line-height:1.5}
+  h2 .num{color:var(--accent-soft);margin-right:.55rem}
+  h3{font-size:.98rem;font-weight:600;margin:1.5rem 0 .5rem}
+  p{margin:0 0 1rem}
+  ul,ol{margin:0 0 1.1rem;padding-left:1.45rem}
+  li{margin:.28rem 0}
+  li::marker{color:var(--accent-soft)}
+  table{width:100%;border-collapse:collapse;margin:.5rem 0 1.4rem;font-size:.86rem;line-height:1.65}
+  th{text-align:left;font-weight:600;font-size:.8rem;color:var(--ink-soft);background:var(--panel);border-bottom:1px solid var(--rule);padding:.5rem .65rem}
+  td{border-bottom:1px solid var(--rule);padding:.55rem .65rem;vertical-align:top}
+  td:first-child{font-weight:600;white-space:nowrap}
+  pre{background:var(--panel);border:1px solid var(--rule);padding:.9rem 1.1rem;overflow-x:auto;
+    font-size:.8rem;line-height:1.6;font-family:ui-monospace,"JetBrains Mono",Menlo,monospace;margin:.4rem 0 1.3rem}
+  .box{background:var(--panel);border-left:3px solid var(--accent-soft);padding:1rem 1.4rem .5rem;margin:1.2rem 0 1.5rem}
+  .note{font-size:.88rem;color:var(--muted);line-height:1.75;margin:-.2rem 0 1.4rem;padding-left:.9rem;border-left:2px solid var(--rule)}
+  footer{margin-top:3.4rem;padding-top:1.3rem;border-top:1px solid var(--rule);font-size:.82rem;color:var(--muted)}
+  @media (max-width:640px){body{padding:2.6rem 1.15rem 4rem;font-size:16px}td:first-child{white-space:normal}}
+  @media print{body{background:#fff;padding:0;font-size:10.5pt}h2{break-after:avoid}table,.box,pre{break-inside:avoid}}
+</style>
+</head>
+<body>
+<main>
+
+<h1>部署</h1>
+<p class="subtitle">装什么、放哪里、怎么起、怎么连、怎么升级与排障。单机与专机两种形态。</p>
+<p class="meta">2026 年 11 月　·　三份文档之三</p>
+
+<h2><span class="num">一</span>组成</h2>
+<table>
+  <thead><tr><th>组件</th><th>是什么</th><th>默认位置</th></tr></thead>
+  <tbody>
+    <tr><td>MISAKA</td><td>会话、协调、执行、视图的进程</td><td>Python 环境内的包</td></tr>
+    <tr><td>中心</td><td>消息投递服务（外部依赖）</td><td>本机，独立进程</td></tr>
+    <tr><td>数据目录</td><td>数据库、实例会话、技能、缓存</td><td><code>~/.misaka</code></td></tr>
+    <tr><td>项目目录</td><td>每个被处理的项目，含产物</td><td>由人指定</td></tr>
+    <tr><td>历史</td><td>实例的完整经历</td><td>数据目录内的实例会话</td></tr>
+  </tbody>
+</table>
+<p>中心与 MISAKA 是两个进程，可以同机也可以分机。数据库与历史只在 MISAKA 所在机器，中心不保存任务与历史。</p>
+
+<h2><span class="num">二</span>单机安装</h2>
+<ol>
+  <li>准备 Python 3.12 以上环境。安装包依赖随发行物一起提供，不需要系统级包管理器。</li>
+  <li>安装 MISAKA，确认版本与命令可用。</li>
+  <li>安装中心，初始化数据目录，启动服务。</li>
+  <li>在中心建立三个身份：Last Order、一个执行者、一个管理身份。每个身份只拿到一次令牌。</li>
+  <li>在中心登记接收目标：Last Order 一个，执行者按实例登记；目标类型为本机回调。</li>
+  <li>在 MISAKA 写入中心地址与令牌，指向数据目录。</li>
+  <li>建立第一个 Last Order 实例，指定模板节点。</li>
+  <li>指定一个项目目录，启动会话。</li>
+</ol>
+<p>完成以上八步后，人在会话里说话即可唤起 Last Order，无需再做任何手工配置。</p>
+
+<h2><span class="num">三</span>中心</h2>
+<p>中心的职责只有投递：身份、订阅匹配、排队、限频合并、重试。安装与配置按下述顺序：</p>
+<pre>
+npm install -g notifs@0.2.0
+notifs init
+notifs start
+notifs identity add last-order
+notifs identity add worker
+notifs identity add operator --manager
+notifs endpoint put --config '{"name":"last-order","owner":"last-order","delivery":{"kind":"webhook","config":{"url":"http://127.0.0.1:PORT/messages"}}}'
+</pre>
+<p>执行者的目标由 MISAKA 在建立实例时创建，不在安装阶段手工登记。订阅同理：卡片的订阅随卡片建立与删除，只有 Last Order 自身的订阅在安装时登记一次。</p>
+<p class="note">中心默认只监听本机。对外部署必须在前置代理处终结加密，见第六节。</p>
+
+<h2><span class="num">四</span>配置项</h2>
+<table>
+  <thead><tr><th>配置</th><th>作用</th><th>默认</th></tr></thead>
+  <tbody>
+    <tr><td>数据目录</td><td>数据库、会话、技能、缓存的位置</td><td><code>~/.misaka</code></td></tr>
+    <tr><td>中心地址</td><td>发布与接收的地址；本机可用本地通路</td><td><code>http://127.0.0.1:PORT</code></td></tr>
+    <tr><td>身份令牌</td><td>每个参与者一个；只经文件或环境变量提供</td><td>数据目录内，权限 600</td></tr>
+    <tr><td>回调端口</td><td>MISAKA 接收投递的端口</td><td>由启动时分配</td></tr>
+    <tr><td>刷新周期</td><td>视图读取数据库的间隔</td><td>0.5 秒</td></tr>
+    <tr><td>触发频率</td><td>每个接收者的最高投递频率</td><td>2 秒一次，空闲时立即投递</td></tr>
+  </tbody>
+</table>
+
+<h2><span class="num">五</span>服务化</h2>
+<p>需要长期运行的有两个进程：中心与 MISAKA 的后台。两者都用用户级服务管理，开机自启，日志写入数据目录。</p>
+<table>
+  <thead><tr><th>服务</th><th>启动命令</th><th>重启策略</th></tr></thead>
+  <tbody>
+    <tr><td>中心</td><td>中心自带的启动命令</td><td>总是重启，间隔 5 秒</td></tr>
+    <tr><td>MISAKA 后台</td><td>打开面板与后台的命令</td><td>总是重启，间隔 5 秒</td></tr>
+  </tbody>
+</table>
+<p>会话窗口是前台进程，由人启动，不做服务化：它属于交互，不属于常驻。</p>
+<p>两个服务之间没有启动顺序要求：MISAKA 在中心不可用时照常本地工作，消息暂存。</p>
+
+<h2><span class="num">六</span>专机部署</h2>
+<p>中心单独放在一台机器时，改动只有三处：监听地址、加密、令牌。</p>
+<ul>
+  <li>中心监听地址改为可达地址；默认只监听本机。</li>
+  <li>在中心前面放一层加密代理，或使用内网；中心本身不提供加密。</li>
+  <li>MISAKA 的中心地址改为代理地址；令牌通过文件或环境变量提供，不写入项目目录。</li>
+  <li>防火墙只放行代理端口；中心端口不对外。</li>
+  <li>令牌轮换：在中心轮换身份令牌后，更新本机配置并重启后台。</li>
+</ul>
+<p>数据库与历史仍在 MISAKA 机器上，不上中心。因此中心换机不影响任务与历史，只影响消息队列。</p>
+
+<h2><span class="num">七</span>升级与回滚</h2>
+<p>升级分两种：MISAKA 升级与中心升级，互不要求同时进行。</p>
+<table>
+  <thead><tr><th>对象</th><th>升级方式</th><th>回滚方式</th></tr></thead>
+  <tbody>
+    <tr><td>MISAKA</td><td>替换环境内的包；数据库版本不一致时拒绝启动</td><td>换回旧包；数据库按备份恢复</td></tr>
+    <tr><td>中心</td><td>替换包并重启；队列保留</td><td>换回旧包并重启</td></tr>
+    <tr><td>数据</td><td>不做迁移；版本不一致时要求清空</td><td>从备份恢复整个数据目录</td></tr>
+  </tbody>
+</table>
+<p class="note">本产品处于开发阶段，数据不保证向前兼容。升级前先备份数据目录；版本不一致时以清空重建为准。</p>
+
+<h2><span class="num">八</span>备份与恢复</h2>
+<p>需要备份的只有三处：数据目录、项目目录、中心的配置与队列。</p>
+<ul>
+  <li>数据目录：数据库与实例会话。停后台后整目录复制，或使用数据库自带的备份命令。</li>
+  <li>项目目录：产物与卡片导出文件；按普通代码仓库备份。</li>
+  <li>中心：配置与队列；只影响未投递消息，丢失后重发即可。</li>
+</ul>
+<p>恢复顺序：先恢复数据目录，再启动后台，最后确认中心可达。恢复后不需要重建模板与实例。</p>
+
+<h2><span class="num">九</span>排障</h2>
+<table>
+  <thead><tr><th>现象</th><th>检查</th><th>处理</th></tr></thead>
+  <tbody>
+    <tr><td>说话没有反应</td><td>会话进程是否在；数据库是否可写</td><td>重启会话；检查数据目录权限</td></tr>
+    <tr><td>卡片不启动</td><td>前置是否完成；实例是否被占用；代次是否过期</td><td>按视图提示修正；重新提交启动</td></tr>
+    <tr><td>订阅不生效</td><td>中心内是否有对应订阅；目标地址是否可达</td><td>在中心查询订阅；检查回调端口</td></tr>
+    <tr><td>消息重复进入</td><td>接收端是否按编号去重；是否重启过中间层</td><td>检查去重记录；确认编号来源一致</td></tr>
+    <tr><td>中心不可达</td><td>服务是否在跑；端口与令牌</td><td>重启服务；核对配置</td></tr>
+    <tr><td>实例被占用无法启动新卡</td><td>是否有执行中的卡片</td><td>结束或取消该卡；或另建实例</td></tr>
+    <tr><td>数据库版本不符</td><td>启动日志中的版本</td><td>清空重建，或恢复匹配版本的备份</td></tr>
+  </tbody>
+</table>
+
+<h2><span class="num">十</span>安全边界</h2>
+<ul>
+  <li>令牌只存文件或环境变量，权限 600，不写入项目目录、不进入消息与日志。</li>
+  <li>中心默认不加密、只监听本机；对外必须经加密代理。</li>
+  <li>接收端在写入持久记录后才确认接收，避免中间层重试造成丢失。</li>
+  <li>执行者的文件范围与禁止命令由卡片声明，属提示与装配层约束，不承诺阻断所有路径。</li>
+</ul>
+
+<footer>
+  <p>本文只写部署与运维。设计与实现见另外两份。</p>
+</footer>
+
+</main>
+</body>
+</html>
