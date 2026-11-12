@@ -312,10 +312,9 @@ def update_plan(con, request_id, expected_revision, changes):
             executor = instance(con, values.get("instance_id"))
             if executor["role"] != "sister" or executor["retired"]:
                 raise ValueError("Cards require a non-retired Sister instance")
-            cancelling = change.get("cancel") is True
-            if row is not None and row["status"] not in ("ready", "todo", "held", "blocked") and not cancelling:
+            if row is not None and row["status"] not in ("ready", "todo", "held", "blocked", "triage"):
                 raise ValueError(
-                    f"Card {tid} is {row['status']}; stop/review it through its lifecycle or create a follow-up"
+                    f"Card {tid} is {row['status']}; stop it with the stop action, or create a follow-up"
                 )
             if type(values.get("priority", 0)) is not int:
                 raise ValueError("priority must be an integer")

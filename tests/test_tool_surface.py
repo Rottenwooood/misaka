@@ -191,3 +191,54 @@ def test_a_patch_equal_to_the_node_does_not_create_a_revision():
             assert con.execute("SELECT template_revision FROM instances WHERE id='w1'").fetchone()[0] == 1
     finally:
         s.close()
+
+
+def test_the_last_order_stops_a_card_and_the_process_is_named():
+    import asyncio
+
+    from misaka.core.network.wiring import coordination
+
+    s = Scenario()
+    calls = []
+    tools = {}
+
+    class Harness:
+        def registerTool(self, definition):
+            tools[definition.name] = definition
+
+    class Runtime:
+        async def stop(self, card_id, *, confirmed, context):
+            calls.append((card_id, confirmed))
+            return {"stopped": True}
+
+    try:
+        s.apply([
+            {"op": "template.create", "id": "lo", "role": "last-order", "config": {}},
+            {"op": "instance.create", "id": "lo", "template_id": "lo", "template_revision": 1},
+            {"op": "template.create", "id": "sister", "role": "sister", "config": {}},
+            {"op": "instance.create", "id": "worker", "template_id": "sister", "template_revision": 1},
+            {"op": "request.create", "id": "req", "title": "R", "owner_id": "lo",
+             "workspace": str(s.project)},
+        ])
+        from misaka.core.platform import tasks, work
+        with closing(tasks.connect(s.database)) as con:
+            work.update_plan(con, "req", 0, [{"id": "t_a00001", "title": "One",
+                                              "instance_id": "worker", "body": BODY}])
+            coordination.install(Harness(), Runtime(), lambda: con, "lo")
+            result = asyncio.run(tools["misaka_task"].execute(
+                "call", {"command": {"action": "stop", "cards": ["t_a00001"]}},
+                None, None, None))
+            assert calls == [("t_a00001", True)]
+            assert '"state": "stopped"' in result["content"][0]["text"]
+
+            class NoPane:
+                async def stop(self, card_id, *, confirmed, context):
+                    raise ValueError("Card is not running in a pane.")
+
+            coordination.install(Harness(), NoPane(), lambda: con, "lo")
+            asyncio.run(tools["misaka_task"].execute(
+                "call", {"command": {"action": "stop", "cards": ["t_a00001"]}},
+                None, None, None))
+            assert tasks.get(con, "t_a00001")["status"] == "stopped"
+    finally:
+        s.close()

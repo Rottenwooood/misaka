@@ -53,6 +53,11 @@ class ResumeCards(Command):
     cards: list[CardId] = Field(min_length=1, description="Blocked cards to put back on the board.")
 
 
+class StopCards(Command):
+    action: Literal["stop"]
+    cards: list[CardId] = Field(min_length=1, description="Cards to stop; a running card's process is terminated.")
+
+
 class DispatchCard(Command):
     id: CardId
     generation: int | None = Field(None, ge=1, description="Omit to start the card as it is now; pass it to refuse a stale edit.")
@@ -64,7 +69,7 @@ class StartCards(Command):
 
 
 class TaskParams(Command):
-    command: Annotated[ShowTask | SavePlan | StartCards | ResumeCards, Field(discriminator="action")]
+    command: Annotated[ShowTask | SavePlan | StartCards | ResumeCards | StopCards, Field(discriminator="action")]
 
 
 class ShowRoster(Command):
@@ -188,16 +193,39 @@ def install(collector, runtime, connection, owner_id):
             raise ValueError("This tool requires a registered Last Order instance")
         return work.coordinator(con, owner_id)["id"]
 
+    async def stop_cards(command, con, ctx):
+        results = []
+        for card_id in command.cards:
+            row = tasks.get(con, card_id)
+            if row is None:
+                raise ValueError(f"Card not found: {card_id}")
+            if row["status"] in ("done", "failed", "stopped"):
+                results.append({"id": card_id, "state": row["status"]})
+                continue
+            stopped = False
+            try:
+                receipt = await runtime.stop(card_id, confirmed=True, context=ctx)
+                stopped = bool(receipt.get("stopped"))
+            except Exception:  # noqa: BLE001 - no pane owns it; the board is the only place to stop it
+                stopped = False
+            if not stopped:
+                with tasks.write_txn(con):
+                    stopped = tasks.mark_stopped(con, card_id)
+            results.append({"id": card_id, "state": "stopped" if stopped else row["status"]})
+        return _data("stopped", results)
+
     @toolkit.register_tool(
         collector, name="misaka_task", label="Coordinate work",
-        description="Read or save your task plans, or explicitly start named ready cards. "
-                    "Saving does not start execution. Starting may consume model quota. "
-                    "Follow the user's instructions for presenting plans and coordinating with them.",
+        description="Read or save your task plans, start named ready cards, resume a blocked card, "
+                    "or stop a card and its process. Saving does not start execution. Starting may "
+                    "consume model quota. Follow the user's instructions for presenting plans.",
         parameters=TaskParams, schema=_command_schema,
     )
     async def task(tool_call_id, params, signal, on_update, ctx):
         con = connection()
         command = params.command
+        if isinstance(command, StopCards):
+            return await stop_cards(command, con, ctx)
         with tasks.write_txn(con):
             owner = actor(con)
             if isinstance(command, ShowTask):
