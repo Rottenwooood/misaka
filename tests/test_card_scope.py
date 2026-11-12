@@ -18,8 +18,7 @@ def card(scenario, card_id):
 
 
 def subscriptions(scenario, card_id):
-    return rows(scenario, "SELECT source,type,target FROM subscriptions "
-                          "WHERE card_id=? ORDER BY id", (card_id,))
+    return json.loads(card(scenario, card_id)["subscriptions"] or "[]")
 
 
 def seed(scenario):
@@ -84,7 +83,7 @@ def test_saving_again_replaces_the_subscriptions():
         s.close()
 
 
-def test_cancelling_a_card_drops_its_subscriptions():
+def test_cancelling_a_card_keeps_the_configuration_and_stops_it():
     s = Scenario()
     try:
         s.apply([
@@ -101,7 +100,8 @@ def test_cancelling_a_card_drops_its_subscriptions():
         s.apply([{"op": "plan.update", "request_id": "req", "expected_revision": 1, "cards": [{
             "id": "t_a00001", "cancel": True,
         }]}])
-        assert subscriptions(s, "t_a00001") == []
+        assert subscriptions(s, "t_a00001") == [
+            {"source": "tests", "type": "test.failed", "target": None}]
         assert card(s, "t_a00001")["status"] == "stopped"
     finally:
         s.close()

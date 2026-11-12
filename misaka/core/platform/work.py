@@ -284,7 +284,8 @@ def update_plan(con, request_id, expected_revision, changes):
                 raise ValueError("cancel must be boolean")
             fs_scope = _string_list(values.get("fs_scope"), "fs_scope")
             forbidden = _string_list(values.get("forbidden_commands"), "forbidden_commands")
-            specs = _subscription_specs(change.get("subscriptions"))
+            specs = (_subscription_specs(change.get("subscriptions"))
+                     if "subscriptions" in change else None)
             if row is None:
                 tasks.create_task(
                     con,
@@ -299,11 +300,13 @@ def update_plan(con, request_id, expected_revision, changes):
                     task_id=tid,
                     fs_scope=fs_scope,
                     forbidden_commands=forbidden,
+                    subscriptions=specs,
                 )
             else:
                 con.execute(
                     "UPDATE tasks SET title=?,body=?,instance_id=?,priority=?,model=?,reviewer=?,"
-                    "fs_scope=?,forbidden_commands=?,generation=generation+1 WHERE id=?",
+                    "fs_scope=?,forbidden_commands=?,"
+                    "subscriptions=COALESCE(?,subscriptions),generation=generation+1 WHERE id=?",
                     (
                         title,
                         body,
@@ -313,6 +316,7 @@ def update_plan(con, request_id, expected_revision, changes):
                         values.get("reviewer"),
                         None if fs_scope is None else json.dumps(fs_scope),
                         None if forbidden is None else json.dumps(forbidden),
+                        None if specs is None else json.dumps(specs),
                         tid,
                     ),
                 )
@@ -340,15 +344,6 @@ def update_plan(con, request_id, expected_revision, changes):
                         "previous_contract": previous,
                     },
                 )
-            if "subscriptions" in change:
-                con.execute("DELETE FROM subscriptions WHERE card_id=?", (tid,))
-                for index, spec in enumerate(specs):
-                    con.execute(
-                        "INSERT INTO subscriptions(id,card_id,instance_id,source,type,target,created_at) "
-                        "VALUES(?,?,NULL,?,?,?,?)",
-                        (f"sub_{tid[2:]}_{index}", tid, spec["source"], spec["type"],
-                         spec["target"], int(time.time())),
-                    )
             if change.get("cancel"):
                 con.execute(
                     "UPDATE tasks SET status='stopped',completed_at=? WHERE id=?",
@@ -616,14 +611,12 @@ def owned_state(con, owner, request_id=None):
     current = owned_request(con, owner, request_id)
     fields = ("id", "title", "body", "instance_id", "model", "reviewer", "priority",
               "status", "generation", "review_feedback", "block_reason",
-              "fs_scope", "forbidden_commands")
+              "fs_scope", "forbidden_commands", "subscriptions")
     rows = con.execute("SELECT * FROM card_state WHERE request_id=? ORDER BY created_at,id", (request_id,))
     return {"request": current, "cards": [
         {key: row[key] for key in fields} | {
             "needs": tasks.parent_ids(con, row["id"]),
-            "subscriptions": [dict(item) for item in con.execute(
-                "SELECT source,type,target FROM subscriptions WHERE card_id=? ORDER BY id",
-                (row["id"],))],
+            "subscriptions": json.loads(row["subscriptions"] or "[]"),
         }
         for row in rows
     ]}

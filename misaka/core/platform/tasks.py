@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS tasks (
  reviewer TEXT,
  model TEXT,
  fs_scope TEXT, -- JSON list of paths this card may touch
+ subscriptions TEXT, -- JSON list of source/type pairs the centre delivers
  forbidden_commands TEXT, -- JSON list of command patterns this card may not run
  status TEXT NOT NULL DEFAULT 'ready',
  priority INTEGER NOT NULL DEFAULT 0,
@@ -97,22 +98,6 @@ CREATE TABLE IF NOT EXISTS card_urls (
  url TEXT NOT NULL,
  PRIMARY KEY(task_id,url)
 );
-CREATE TABLE IF NOT EXISTS subscriptions (
- id TEXT PRIMARY KEY,
- card_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
- instance_id TEXT REFERENCES instances(id) ON DELETE CASCADE,
- source TEXT NOT NULL,
- type TEXT NOT NULL,
- target TEXT,
- created_at INTEGER NOT NULL,
- CHECK((card_id IS NULL) != (instance_id IS NULL))
-);
-CREATE TRIGGER IF NOT EXISTS card_subscriptions_end_with_the_card
-AFTER UPDATE OF status ON tasks
-WHEN NEW.status IN ('done','failed','stopped')
-BEGIN
-  DELETE FROM subscriptions WHERE card_id = NEW.id;
-END;
 CREATE TABLE IF NOT EXISTS events (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  task_id TEXT NOT NULL,
@@ -185,7 +170,7 @@ CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, kind, id);
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
 """
-TASK_SCHEMA_VERSION = 13
+TASK_SCHEMA_VERSION = 14
 MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 # One failure model for every way an attempt can end badly -- a crash, a timeout, a provider
 # error, a turn that ended without settling the card. Each counts against the same limit and the
@@ -470,7 +455,7 @@ def _scope_json(value):
 @_serialized
 def create_task(con, title, body="", *, request_id, instance_id, model=None, priority=0,
                 reviewer=None, workspace=None, output_dir=None, origin_session=None, task_id=None,
-                fs_scope=None, forbidden_commands=None):
+                fs_scope=None, forbidden_commands=None, subscriptions=None):
     """Create the canonical card row. Identity and ownership are never inferred from files."""
     from misaka.core.platform import work
     owner = work.request(con, request_id)
@@ -486,11 +471,11 @@ def create_task(con, title, body="", *, request_id, instance_id, model=None, pri
     tid = task_id or "t_" + secrets.token_hex(3)
     con.execute(
         "INSERT INTO tasks(id,request_id,instance_id,title,body,reviewer,model,priority,"
-        "workspace,output_dir,origin_session,fs_scope,forbidden_commands,created_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "workspace,output_dir,origin_session,fs_scope,forbidden_commands,subscriptions,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (tid,request_id,instance_id,title,body,reviewer,model,priority,workspace,output_dir,
          origin_session or None,_scope_json(fs_scope),_scope_json(forbidden_commands),
-         int(time.time())),
+         _scope_json(subscriptions),int(time.time())),
     )
     add_event(con, tid, "created", {"title":title,"request_id":request_id,"instance_id":instance_id})
     return tid

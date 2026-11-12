@@ -161,6 +161,54 @@ def reconcile(con, cfg, *, task_ids=None, workspace=None):
 
 
 
+
+def _card_subscriptions(card):
+    import json
+    return json.loads(card["subscriptions"] or "[]")
+
+
+def _apply_subscriptions(con, card, generation, lock):
+    """Push a card's subscriptions before it runs; refuse to start half-connected."""
+    specs = _card_subscriptions(card)
+    if not specs:
+        return True
+    from misaka.core.messaging import config as center_config
+    from misaka.core.messaging.sync import SubscriptionSync
+
+    client = center_config.center()
+    if client is None:
+        db.add_event(con, card["id"], "subscriptions_unconfigured",
+                     {"count": len(specs)}, generation=generation, claim_lock=lock)
+        db.back_to_ready(con, card["id"], generation=generation, claim_lock=lock)
+        return False
+    try:
+        SubscriptionSync(client, card["instance_id"]).apply_card(card["id"], specs)
+    except Exception as error:  # noqa: BLE001 - any failure means no deliveries
+        db.add_event(con, card["id"], "subscriptions_failed",
+                     {"reason": str(error)[:400]}, generation=generation, claim_lock=lock)
+        db.back_to_ready(con, card["id"], generation=generation, claim_lock=lock)
+        return False
+    return True
+
+
+def _clear_subscriptions(card):
+    """Drop the card's active subscriptions at the centre; best effort."""
+    specs = _card_subscriptions(card)
+    if not specs:
+        return
+    from misaka.core.messaging import config as center_config
+    from misaka.core.messaging.sync import SubscriptionSync
+
+    client = center_config.center()
+    if client is None:
+        return
+    names = [SubscriptionSync.name_for(card["id"], index) for index in range(len(specs))]
+    try:
+        SubscriptionSync(client, card["instance_id"]).clear(names)
+    except Exception:  # noqa: BLE001 - the run already ended; a stale subscription is not a failure
+        pass
+
+
 def run_task(con, t, cfg, *, say=None):
     """Claim a ready card and run it; with ``say``, continue the settled card ``t`` instead -- a new
     generation in her own conversation, the message being the turn (the headless counterpart of
@@ -197,6 +245,8 @@ def run_task(con, t, cfg, *, say=None):
     if not t["workspace"] and not db.set_workspace(
         con, t["id"], workspace, generation=generation, claim_lock=lock
     ):
+        return False
+    if not _apply_subscriptions(con, t, generation, lock):
         return False
     run_dir = workspace
     db.add_event(
@@ -294,6 +344,9 @@ def run_task(con, t, cfg, *, say=None):
             generation=generation, claim_lock=lock,
         ):
             db.mark_failed(con, t["id"], generation=generation, claim_lock=lock)
+    final = db.get(con, t["id"])
+    if final is not None and final["status"] in ("done", "failed", "stopped"):
+        _clear_subscriptions(final)
     return True
 
 
