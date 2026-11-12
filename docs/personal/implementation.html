@@ -70,16 +70,18 @@ misaka/
 │   │       ├── coordination.py 修改：增加订阅与消息两个工具
 │   │       ├── collaboration.py 不动
 │   │       └── capabilities.py  不动
-│   ├── messaging/            【新增】中心适配
+│   ├── messaging/            中心适配
 │   │   ├── __init__.py
-│   │   ├── client.py         发布、健康、待处理量
+│   │   ├── client.py         发布、登记目标、增删订阅
 │   │   ├── sync.py           订阅同步
-│   │   └── inbox.py          接收、去重、注入
-│   ├── context/              【新增】上下文动作
+│   │   ├── inbox.py          接收、去重、两段式交付
+│   │   ├── delivery.py       投递落到卡片或实例会话
+│   │   ├── registry.py       实例端点与直投订阅
+│   │   └── config.py         中心地址、令牌、回调地址
+│   ├── context/              上下文动作
 │   │   ├── __init__.py
-│   │   ├── tags.py           经历标签
-│   │   ├── isolation.py      历史隔离
-│   │   └── skills.py         技能候选
+│   │   ├── isolation.py      换会话并把旧历史记下来
+│   │   └── skills.py         技能候选、批准、否决（经历标签在看板层）
 │   ├── subagent/             不动
 │   ├── research/             不动
 │   ├── documents/            不动

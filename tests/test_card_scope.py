@@ -124,3 +124,25 @@ def test_a_bad_subscription_shape_is_refused():
         assert rows(s, "SELECT * FROM tasks") == []
     finally:
         s.close()
+
+
+def test_the_view_snapshot_carries_scope_commands_and_subscriptions():
+    s = Scenario()
+    try:
+        s.apply([
+            {"op": "template.create", "id": "lo", "role": "last-order", "config": {"system": "c"}},
+            {"op": "instance.create", "id": "lo", "template_id": "lo", "template_revision": 1},
+        ])
+        seed(s)
+        s.apply([{"op": "plan.update", "request_id": "req", "expected_revision": 0, "cards": [{
+            "id": "t_a00001", "title": "One", "instance_id": "worker", "body": BODY,
+            "fs_scope": ["src"], "forbidden_commands": ["git push"],
+            "subscriptions": [{"source": "tests", "type": "test.failed"}],
+        }]}])
+        snapshot = s.snapshot("--project", str(s.project))
+        node = next(n for p in snapshot["projects"] for n in p["nodes"] if n["id"] == "t_a00001")
+        assert json.loads(node["fs_scope"]) == ["src"]
+        assert json.loads(node["forbidden_commands"]) == ["git push"]
+        assert json.loads(node["subscriptions"])[0]["type"] == "test.failed"
+    finally:
+        s.close()

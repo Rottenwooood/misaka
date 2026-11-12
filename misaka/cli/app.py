@@ -48,6 +48,11 @@ def _parser(extension_commands=None):
     state = sub.add_parser("state", help="Inspect or atomically edit work requests, templates, instances and plans")
     state_sub = state.add_subparsers(dest="state_cmd", required=True)
     state_sub.add_parser("show")
+    state_boot = state_sub.add_parser("bootstrap", help="Create the first Last Order template and instance")
+    state_boot.add_argument("--template", default="last-order")
+    state_boot.add_argument("--instance", default="lo")
+    state_boot.add_argument("--model", help="provider/model for this Last Order; default is the global one")
+    state_boot.add_argument("--system", help="Extra instruction text for this Last Order")
     state_apply = state_sub.add_parser("apply")
     state_apply.add_argument("--file", required=True, help="JSON operation batch; - reads stdin")
 

@@ -12,7 +12,23 @@ from misaka.core.platform import tasks, work
 
 def run(args):
     try:
-        if args.state_cmd == "apply":
+        if args.state_cmd == "bootstrap":
+            with closing(tasks.connect(str(home.path("db")))) as con:
+                known = con.execute("SELECT 1 FROM templates WHERE id=?", (args.template,)).fetchone()
+                config = {}
+                if args.model:
+                    config["model"] = args.model
+                if args.system:
+                    config["system"] = args.system
+                operations = []
+                if known is None:
+                    operations.append({"op": "template.create", "id": args.template,
+                                       "role": "last-order", "config": config})
+                if con.execute("SELECT 1 FROM instances WHERE id=?", (args.instance,)).fetchone() is None:
+                    operations.append({"op": "instance.create", "id": args.instance,
+                                       "template_id": args.template, "template_revision": 1})
+                result = work.apply(con, operations) if operations else {"created": []}
+        elif args.state_cmd == "apply":
             text = (
                 sys.stdin.read()
                 if args.file == "-"

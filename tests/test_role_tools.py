@@ -6,7 +6,8 @@ EXECUTION = {"bash", "powershell", "write", "edit", "office", "read", "grep", "f
 
 def test_last_order_defaults_are_management_and_messages_only():
     defaults = set(instances.default_tools("last-order"))
-    assert {"misaka_task", "misaka_roster", "SendMessage", "misaka_sister_peek"} <= defaults
+    assert {"misaka_task", "misaka_roster", "misaka_context", "misaka_skill",
+            "SendMessage", "misaka_sister_peek"} <= defaults
     assert not defaults & EXECUTION
 
 

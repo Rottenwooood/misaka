@@ -87,6 +87,9 @@ class SnapshotReader:
                                     "errors": [],
                                     "block_reason": row["block_reason"],
                                     "session_file": row["session_file"],
+                                    "fs_scope": row["fs_scope"],
+                                    "forbidden_commands": row["forbidden_commands"],
+                                    "subscriptions": row["subscriptions"],
                                 }
                             )
                         project["requests"].append(group)

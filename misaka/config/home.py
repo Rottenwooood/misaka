@@ -91,6 +91,7 @@ LAYOUT: dict[str, Entry] = {
     "plugins": Entry("state/plugins", "state"),
     "skills_state": Entry("state/skills", "state"),
     "skills_pending": Entry("state/skills-pending", "state"),
+    "skill_candidates": Entry("state/skill-candidates", "state"),
     "web_evidence": Entry("state/web-evidence", "state"),
     # What `misaka update` copies before it changes anything (``cli.backup``); owner-only when made.
     "backups": Entry("state/backups", "state"),

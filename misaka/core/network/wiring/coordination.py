@@ -123,6 +123,19 @@ def _command_schema(model):
     return inline(schema)
 
 
+class ContextParams(Command):
+    action: Literal["isolate", "list"]
+    instance_id: str | None = None
+    label: str | None = None
+
+
+class SkillParams(Command):
+    action: Literal["propose", "list", "approve", "reject"]
+    name: str | None = None
+    body: str | None = None
+    description: str | None = None
+
+
 def _data(label, value):
     return {"content": [{"type": "text", "text": untrusted(label, redact(json.dumps(value, ensure_ascii=False)))}],
             "details": {}}
@@ -176,6 +189,45 @@ def install(collector, runtime, connection, owner_id):
                 receipt = {"task_id": card_id, "status": "error", "error": str(error)}
             receipts.append(receipt)
         return _data("launch-receipts", receipts)
+
+    @toolkit.register_tool(
+        collector, name="misaka_context", label="Set history aside",
+        description="Start a fresh window for an instance and record what was set aside, or list "
+                    "the stretches already set aside. The old transcript is kept.",
+        parameters=ContextParams,
+    )
+    async def context_tool(tool_call_id, params, signal, on_update, ctx):
+        from misaka.core.context.isolation import HistoryIsolation
+
+        con = connection()
+        owner = actor(con)
+        target = params.instance_id or owner
+        action = HistoryIsolation(lambda: con)
+        if params.action == "list":
+            return _data("history-isolations", action.list(target))
+        return _data("history-isolation", action.isolate(target, params.label))
+
+    @toolkit.register_tool(
+        collector, name="misaka_skill", label="Propose a skill",
+        description="Propose a reusable method, list proposals, approve one into the shared skills, "
+                    "or reject it. A proposal loads nothing until it is approved.",
+        parameters=SkillParams,
+    )
+    async def skill_tool(tool_call_id, params, signal, on_update, ctx):
+        from misaka.core.context.skills import SkillCandidate
+
+        owner = actor(connection())
+        candidate = SkillCandidate()
+        if params.action == "list":
+            return _data("skill-candidates", candidate.list())
+        if not params.name:
+            raise ValueError("A skill action needs a name")
+        if params.action == "propose":
+            return _data("skill-candidate", candidate.propose(
+                params.name, params.body or "", description=params.description or ""))
+        if params.action == "approve":
+            return _data("skill-candidate", candidate.approve(params.name))
+        return _data("skill-candidate", candidate.reject(params.name))
 
     @toolkit.register_tool(
         collector, name="misaka_roster", label="Manage templates and instances",

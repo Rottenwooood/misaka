@@ -99,6 +99,14 @@ CREATE TABLE IF NOT EXISTS experience_tags (
  label TEXT NOT NULL,
  created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS history_isolations (
+ instance_id TEXT NOT NULL REFERENCES instances(id),
+ epoch INTEGER NOT NULL,
+ label TEXT NOT NULL,
+ session_file TEXT,
+ created_at INTEGER NOT NULL,
+ PRIMARY KEY(instance_id, epoch)
+);
 CREATE TABLE IF NOT EXISTS card_urls (
  task_id TEXT NOT NULL REFERENCES tasks(id),
  url TEXT NOT NULL,
@@ -176,7 +184,7 @@ CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, kind, id);
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
 """
-TASK_SCHEMA_VERSION = 16
+TASK_SCHEMA_VERSION = 17
 MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 # One failure model for every way an attempt can end badly -- a crash, a timeout, a provider
 # error, a turn that ended without settling the card. Each counts against the same limit and the
