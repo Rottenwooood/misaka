@@ -80,23 +80,35 @@ async def test_page_failures_are_real_tool_errors(tmp_path, monkeypatch, failure
 @pytest.fixture
 def card(tmp_path, monkeypatch):
     from misaka.core.network.todo import TodoPart
-    from misaka.core.platform import tasks
+    from misaka.core.platform import tasks, work
 
     for key in ("MISAKA_SISTER_OWNER_TASK_ID", "MISAKA_SISTER_OWNER_GENERATION", "MISAKA_SISTER_OWNER_CLAIM_LOCK",
                 "MISAKA_SUBAGENT_PERMISSION_SETTINGS", "MISAKA_SUBAGENT_PERMISSION_MODE"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("MISAKA_USAGE_TASK_ID", "fixture-card")
+    monkeypatch.setenv("MISAKA_USAGE_TASK_ID", "t_a00001")
     monkeypatch.setenv("MISAKA_USAGE_GENERATION", "1")
     monkeypatch.setenv("MISAKA_USAGE_CLAIM_LOCK", "fixture-owner")
     monkeypatch.setattr(policy, "_permission_settings_provider", None)
     monkeypatch.setattr(policy, "_permission_broker", None)
-    con = sqlite3.connect(":memory:")
-    con.row_factory = sqlite3.Row
-    con.execute("CREATE TABLE tasks(id TEXT, status TEXT, generation INTEGER, claim_lock TEXT, workspace TEXT, output_dir TEXT)")
+    con = tasks.connect(str(tmp_path / "board.db"))
     output = tmp_path / "outputs/card"
-    con.execute("INSERT INTO tasks VALUES ('fixture-card', 'running', 1, 'fixture-owner', ?, ?)", (str(tmp_path), str(output)))
+    work.apply(con, [
+        {"op": "template.create", "id": "lo", "role": "last-order", "config": {}},
+        {"op": "instance.create", "id": "lo", "template_id": "lo", "template_revision": 1},
+        {"op": "template.create", "id": "sister", "role": "sister", "config": {}},
+        {"op": "instance.create", "id": "worker", "template_id": "sister", "template_revision": 1},
+        {"op": "request.create", "id": "req", "title": "fixture", "owner_id": "lo",
+         "workspace": str(tmp_path)},
+    ])
+    work.update_plan(con, "req", 0, [{
+        "id": "t_a00001", "title": "fixture", "instance_id": "worker",
+        "body": "## acceptance criteria\nDone.",
+    }])
+    con.execute("UPDATE tasks SET output_dir=? WHERE id='t_a00001'", (str(output),))
+    assert tasks.claim(con, "t_a00001", "fixture-owner", ttl_seconds=600, generation=1,
+                       pid=os.getpid(), worker_identity="fixture")
     part = TodoPart.__new__(TodoPart)
-    part.task_id, part._con, part._bdb = "fixture-card", con, tasks
+    part.task_id, part._con, part._bdb = "t_a00001", con, tasks
     session = NS(cwd=str(tmp_path), settingsManager=NS(getGlobalSettings=dict, getProjectSettings=dict),
                  getActiveToolNames=lambda: ["write", "edit", "read"], moments=NS(parts=[part]))
     part.session = session

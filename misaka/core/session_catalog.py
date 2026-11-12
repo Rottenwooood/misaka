@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import secrets
 import shutil
 import sys
@@ -413,12 +414,21 @@ def list_entries(con, *, extra_paths=()):
         "SELECT i.id,i.label,t.role FROM instances i JOIN templates t ON t.id=i.template_id AND t.revision=i.template_revision"
     )} if "instances" in tables else {}
     cards = {}
-    if "tasks" in tables:
-        for row in con.execute("SELECT c.*,r.session_file AS attempt_session FROM task_runs r JOIN card_state c ON c.id=r.task_id ORDER BY r.started_at,r.rowid"):
+    has_card_state = con is not None and con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='card_state'"
+    ).fetchone() is not None
+    if "tasks" in tables and "task_runs" in tables and has_card_state:
+        try:
+            rows = con.execute("SELECT c.*,r.session_file AS attempt_session FROM task_runs r "
+                               "JOIN card_state c ON c.id=r.task_id ORDER BY r.started_at,r.rowid")
+        except sqlite3.Error:
+            rows = ()
+        for row in rows:
             if row["attempt_session"]:
                 path = str(home.from_stored(row["attempt_session"]))
                 cards[os.path.realpath(path)] = dict(row)
 
+    card_dirs = {os.path.dirname(path): value for path, value in cards.items()}
     records, ephemeral = {}, []
     alive = {}
     for file in _index_dir().glob("*.json"):
@@ -471,6 +481,15 @@ def list_entries(con, *, extra_paths=()):
             row["title"] = actor.get("label", parts[1])
             row["kind"] = record.get("kind", "foreground")
         card = cards.get(path)
+        if card is None and card_dirs:
+            probe = os.path.dirname(path)
+            while probe and probe not in card_dirs:
+                parent = os.path.dirname(probe)
+                if parent == probe:
+                    probe = ""
+                    break
+                probe = parent
+            card = card_dirs.get(probe) if probe else None
         run, node = None, None
         if card:
             if not os.path.isdir(card["workspace"] or ""):

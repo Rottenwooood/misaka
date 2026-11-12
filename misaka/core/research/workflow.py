@@ -565,6 +565,12 @@ async def _apply_plan_changes(con, run, node, round, applied, progress, owner, p
         if not more:
             break
         off |= more
+    removable = [waiting[local]["id"] for local in off]
+    if removable:
+        # The whole set goes off together: edges inside it must not block the first deletion.
+        marks = ",".join("?" for _ in removable)
+        con.execute(f"DELETE FROM task_dependencies WHERE child_id IN ({marks}) "
+                    f"AND parent_id IN ({marks})", removable + removable)
     for local in sorted(off):
         runs.check_owner(con, *owner)
         ok, message = card_files.remove(con, run["workspace"], waiting[local]["id"])

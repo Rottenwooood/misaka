@@ -417,7 +417,7 @@ def run(reader):
     pending = ""
     pending_since = 0
     old_handler = signal.getsignal(signal.SIGWINCH)
-    exit_signals = (signal.SIGTERM, signal.SIGHUP)
+    exit_signals = (signal.SIGTERM, signal.SIGHUP)  # windows-footgun: ok, run() returns above on non-posix
     old_exit_handlers = {sig: signal.getsignal(sig) for sig in exit_signals}
 
     def terminate(sig, _frame):

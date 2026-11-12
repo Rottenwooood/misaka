@@ -18,13 +18,31 @@ def inventory(tmp_path, monkeypatch):
     root = home.path('sessions')
     root.mkdir(parents=True)
     monkeypatch.setattr(session_catalog, 'get_sessions_dir', lambda: str(root))
-    with closing(sqlite3.connect(':memory:')) as con:
-        con.row_factory = sqlite3.Row
-        con.execute('CREATE TABLE tasks (id, session_dir, workspace, assignee, title, status)')
-        directory = root / 'cards' / 't_123456'
-        con.execute('INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?)',
-                    ('t_123456', str(directory), str(tmp_path), '10032', 'parent card', 'running'))
+    from misaka.core.platform import tasks, work
+
+    con = tasks.connect(str(tmp_path / 'board.db'))
+    directory = root / 'cards' / 't_123456'
+    work.apply(con, [
+        {'op': 'template.create', 'id': 'lo', 'role': 'last-order', 'config': {}},
+        {'op': 'instance.create', 'id': 'lo', 'template_id': 'lo', 'template_revision': 1},
+        {'op': 'template.create', 'id': 'sister', 'role': 'sister', 'config': {}},
+        {'op': 'instance.create', 'id': 'worker', 'template_id': 'sister', 'template_revision': 1},
+        {'op': 'request.create', 'id': 'req', 'title': 'fixture', 'owner_id': 'lo',
+         'workspace': str(tmp_path)},
+    ])
+    work.update_plan(con, 'req', 0, [{'id': 't_123456', 'title': 'parent card',
+                                      'instance_id': 'worker',
+                                      'body': '## acceptance criteria\nDone.'}])
+    con.execute("UPDATE tasks SET status='running', claim_lock='fixture', generation=1 "
+                "WHERE id='t_123456'")
+    con.execute("INSERT INTO task_runs(id,task_id,generation,attempt,phase,assignee,status,"
+                "workspace,session_file,started_at) VALUES('run-1','t_123456',1,1,'run',"
+                "'worker','running',?,?,1)",
+                (str(tmp_path), str(directory / 'parent.jsonl')))
+    try:
         yield con, directory, tmp_path
+    finally:
+        con.close()
 
 
 def _transcript(path, cwd, ident):
