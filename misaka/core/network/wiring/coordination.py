@@ -53,9 +53,41 @@ class ResumeCards(Command):
     cards: list[CardId] = Field(min_length=1, description="Blocked cards to put back on the board.")
 
 
-class StopCards(Command):
-    action: Literal["stop"]
-    cards: list[CardId] = Field(min_length=1, description="Cards to stop; a running card's process is terminated.")
+class CancelCards(Command):
+    action: Literal["cancel"]
+    cards: list[CardId] = Field(min_length=1)
+    hard: bool = Field(False, description="Delete the cards instead of keeping them as stopped.")
+
+
+class DeleteRequest(Command):
+    action: Literal["delete_request"]
+    request_id: str
+    force: bool = Field(False, description="Stop and delete even when cards are still active.")
+
+
+class ReviewCard(Command):
+    action: Literal["review"]
+    card_id: CardId
+    verdict: Literal["accept", "reject"]
+    feedback: str | None = Field(None, description="Required when rejecting; it becomes the next turn's input.")
+
+
+class CardResult(Command):
+    action: Literal["result"]
+    card_id: CardId
+    include: list[Literal["summary", "artifacts", "uncertain", "error"]] = Field(
+        default_factory=lambda: ["summary", "artifacts", "uncertain", "error"])
+
+
+class CardResults(Command):
+    action: Literal["results"]
+    request_id: str
+    status: str | None = None
+
+
+class CardArtifacts(Command):
+    action: Literal["artifacts"]
+    card_id: CardId
 
 
 class DispatchCard(Command):
@@ -69,7 +101,9 @@ class StartCards(Command):
 
 
 class TaskParams(Command):
-    command: Annotated[ShowTask | SavePlan | StartCards | ResumeCards | StopCards, Field(discriminator="action")]
+    command: Annotated[ShowTask | SavePlan | StartCards | ResumeCards | CancelCards | DeleteRequest
+                       | ReviewCard | CardResult | CardResults | CardArtifacts,
+                       Field(discriminator="action")]
 
 
 class ShowRoster(Command):
@@ -201,39 +235,67 @@ def install(collector, runtime, connection, owner_id):
             raise ValueError("This tool requires a registered Last Order instance")
         return work.coordinator(con, owner_id)["id"]
 
-    async def stop_cards(command, con, ctx):
+    async def cancel_cards(command, con, ctx):
         results = []
         for card_id in command.cards:
             row = tasks.get(con, card_id)
             if row is None:
-                raise ValueError(f"Card not found: {card_id}")
-            if row["status"] in ("done", "failed", "stopped"):
-                results.append({"id": card_id, "state": row["status"]})
+                results.append({"id": card_id, "status": "not_found"})
                 continue
-            stopped = False
+            if row["status"] in ("running", "review"):
+                try:
+                    await runtime.stop(card_id, confirmed=True, context=ctx)
+                except Exception:  # noqa: BLE001, S110 - no pane owns it; the board still stops it
+                    pass
             try:
-                receipt = await runtime.stop(card_id, confirmed=True, context=ctx)
-                stopped = bool(receipt.get("stopped"))
-            except Exception:  # noqa: BLE001 - no pane owns it; the board is the only place to stop it
-                stopped = False
-            if not stopped:
-                with tasks.write_txn(con):
-                    stopped = tasks.mark_stopped(con, card_id)
-            results.append({"id": card_id, "state": "stopped" if stopped else row["status"]})
-        return _data("stopped", results)
+                if command.hard:
+                    work.delete_card(con, card_id, allow_active=True)
+                    results.append({"id": card_id, "status": "deleted"})
+                else:
+                    results.append(work.cancel_card(con, card_id))
+            except ValueError as error:
+                results.append({"id": card_id, "status": "error", "reason": str(error)})
+        return _data("cancelled", results)
+
+    async def delete_request(command, con, ctx):
+        if command.force:
+            for row in con.execute("SELECT id,status FROM tasks WHERE request_id=?",
+                                   (command.request_id,)).fetchall():
+                if row["status"] in ("running", "review"):
+                    try:
+                        await runtime.stop(row["id"], confirmed=True, context=ctx)
+                    except Exception:  # noqa: BLE001, S110 - deletion proceeds from the board
+                        pass
+        return _data("deleted", work.delete_request(con, command.request_id, force=command.force))
 
     @toolkit.register_tool(
         collector, name="misaka_task", label="Coordinate work",
         description="Read or save your task plans, start named ready cards, resume a blocked card, "
-                    "or stop a card and its process. Saving does not start execution. Starting may "
-                    "consume model quota. Follow the user's instructions for presenting plans.",
+                    "or cancel a card (optionally deleting it). Saving does not start execution. "
+                    "Starting may consume model quota. Follow the user's instructions for presenting plans.",
         parameters=TaskParams, schema=_command_schema,
     )
     async def task(tool_call_id, params, signal, on_update, ctx):
         con = connection()
         command = params.command
-        if isinstance(command, StopCards):
-            return await stop_cards(command, con, ctx)
+        if isinstance(command, CancelCards):
+            return await cancel_cards(command, con, ctx)
+        if isinstance(command, DeleteRequest):
+            return await delete_request(command, con, ctx)
+        if isinstance(command, ReviewCard):
+            return _data("review", work.review_card(con, command.card_id, command.verdict,
+                                                    command.feedback))
+        if isinstance(command, CardResult):
+            return _data("card-result", work.card_result(con, command.card_id, command.include))
+        if isinstance(command, CardResults):
+            rows = con.execute("SELECT id,status FROM tasks WHERE request_id=? ORDER BY id",
+                               (command.request_id,)).fetchall()
+            return _data("card-results", [
+                work.card_result(con, row["id"])
+                for row in rows
+                if command.status is None or row["status"] == command.status])
+        if isinstance(command, CardArtifacts):
+            return _data("card-artifacts", work.card_artifacts(con, command.card_id))
         with tasks.write_txn(con):
             owner = actor(con)
             if isinstance(command, ShowTask):

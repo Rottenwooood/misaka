@@ -728,6 +728,170 @@ def delete_template(con, template_id, revision=None):
     con.commit()
 
 
+def cancel_card(con, card_id):
+    """Take a card off the board without deleting it; any status may be cancelled."""
+    from misaka.core.platform import tasks
+
+    row = tasks.get(con, card_id)
+    if row is None:
+        raise ValueError(f"Card not found: {card_id}")
+    if row["status"] == "stopped":
+        return {"id": card_id, "status": "stopped"}
+    with tasks.write_txn(con):
+        con.execute("UPDATE tasks SET status='stopped',completed_at=? WHERE id=?",
+                    (int(time.time()), card_id))
+        tasks.add_event(con, card_id, "cancelled", {"previous_status": row["status"]})
+    return {"id": card_id, "status": "stopped"}
+
+
+def delete_card(con, card_id, *, allow_active=False):
+    """Remove a card's rows and its file mirror; a card others depend on is refused."""
+    from misaka.core.platform import cards as card_files
+    from misaka.core.platform import tasks
+
+    row = tasks.get(con, card_id)
+    if row is None:
+        raise ValueError(f"Card not found: {card_id}")
+    if tasks._children_of(con, card_id):
+        raise ValueError(f"Card {card_id} still has dependents; edit the plan before deleting it")
+    workspace = row["workspace"]
+    ok, message = tasks.delete_task(con, card_id, allow_active=allow_active)
+    if not ok:
+        raise ValueError(message)
+    import shutil
+    from pathlib import Path
+    shutil.rmtree(card_files.attachment_dir(workspace, card_id), ignore_errors=True)
+    Path(card_files.card_path(workspace, card_id)).unlink(missing_ok=True)
+
+
+def delete_request(con, request_id, *, force=False):
+    """Delete a request and its cards; active cards refuse unless ``force``."""
+    from misaka.core.platform import tasks
+
+    request = con.execute("SELECT id FROM work_requests WHERE id=?", (request_id,)).fetchone()
+    if request is None:
+        return {"id": request_id, "status": "not_found", "deleted_cards": 0}
+    rows = con.execute("SELECT id,status FROM tasks WHERE request_id=? ORDER BY id",
+                       (request_id,)).fetchall()
+    active = [row["id"] for row in rows
+              if row["status"] in ("running", "review", "ready", "todo", "blocked", "triage")]
+    if active and not force:
+        return {"id": request_id, "status": "blocked", "reason": "has_active_cards",
+                "deleted_cards": 0}
+    remaining = [row["id"] for row in rows]
+    deleted = 0
+    while remaining:
+        progress = False
+        for card_id in list(remaining):
+            if not tasks._children_of(con, card_id):
+                delete_card(con, card_id, allow_active=True)
+                remaining.remove(card_id)
+                deleted += 1
+                progress = True
+        if not progress:
+            raise ValueError("Card graph is cyclic")
+    con.execute("DELETE FROM work_requests WHERE id=?", (request_id,))
+    con.commit()
+    return {"id": request_id, "status": "deleted", "deleted_cards": deleted}
+
+
+def review_card(con, card_id, verdict, feedback=None):
+    """A person's verdict on finished work: keep it done, or send it back as a new generation."""
+    from misaka.core.platform import tasks
+
+    row = tasks.get(con, card_id)
+    if row is None:
+        raise ValueError(f"Card not found: {card_id}")
+    if row["status"] not in ("done", "blocked"):
+        raise ValueError(f"Card {card_id} is {row['status']}; only a done or blocked card can be reviewed")
+    feedback = str(feedback or "").strip()
+    if verdict == "reject" and not feedback:
+        raise ValueError("Rejecting a card requires feedback")
+    with tasks.write_txn(con):
+        if verdict == "accept":
+            if row["status"] == "blocked":
+                con.execute(
+                    "UPDATE tasks SET status='done',completed_at=?,block_kind=NULL,block_reason=NULL,"
+                    "blocked_at=NULL,claim_lock=NULL,worker_pid=NULL,worker_identity=NULL WHERE id=?",
+                    (int(time.time()), card_id))
+                tasks.promote_dependents(con, card_id)
+            tasks.add_event(con, card_id, "review_accepted", {"feedback": feedback[:4000]})
+            status = "done"
+        else:
+            status = "todo" if tasks.parent_ids(con, card_id) else "ready"
+            con.execute(
+                "UPDATE tasks SET status=?,generation=generation+1,review_feedback=?,completed_at=NULL,"
+                "block_kind=NULL,block_reason=NULL,blocked_at=NULL,claim_lock=NULL,worker_pid=NULL,"
+                "worker_identity=NULL WHERE id=?",
+                (status, feedback[:4000], card_id))
+            tasks.add_event(con, card_id, "review_rejected", {"feedback": feedback[:4000]})
+    current = tasks.get(con, card_id)
+    return {"id": card_id, "status": status, "generation": int(current["generation"])}
+
+
+def _submission(con, card_id, generation):
+    from misaka.core.platform import tasks
+
+    for candidate in (generation, None):
+        raw = tasks.latest_payload(con, card_id, "submitted", generation=candidate)
+        if raw:
+            try:
+                value = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(value, dict):
+                return value
+    return {}
+
+
+def card_result(con, card_id, include=None):
+    """The structured result a card already declared; no transcript needed."""
+    from misaka.core.platform import tasks
+
+    row = tasks.get(con, card_id)
+    if row is None:
+        raise ValueError(f"Card not found: {card_id}")
+    keys = set(include or ("summary", "artifacts", "uncertain", "error"))
+    submitted = _submission(con, card_id, int(row["generation"])) if row["status"] in ("done", "blocked") else {}
+    result = {"id": card_id, "status": row["status"]}
+    if "summary" in keys:
+        result["summary"] = submitted.get("summary") or None
+    if "artifacts" in keys:
+        result["artifacts"] = card_artifacts(con, card_id) if submitted else []
+    if "uncertain" in keys:
+        result["uncertain"] = submitted.get("uncertain") or []
+    if "error" in keys and row["status"] == "blocked":
+        result["error"] = {"message": row["block_reason"] or "", "at": row["blocked_at"]}
+    if row["status"] in ("done", "blocked"):
+        result["finished_at"] = row["completed_at"]
+    return result
+
+
+def card_artifacts(con, card_id):
+    """The files a submission lists, with size and digest taken from disk now."""
+    from pathlib import Path
+
+    from misaka.core.platform import tasks
+
+    row = tasks.get(con, card_id)
+    if row is None:
+        raise ValueError(f"Card not found: {card_id}")
+    submitted = _submission(con, card_id, int(row["generation"]))
+    root = Path(row["workspace"]).resolve()
+    items = []
+    for name in submitted.get("artifacts") or []:
+        path = (root / str(name)).resolve()
+        try:
+            path.relative_to(root)
+            stat = path.stat()
+            digest = submitted.get("artifact_digests", {}).get(str(name))
+            items.append({"path": str(name), "bytes": stat.st_size, "digest": digest,
+                          "created_at": int(stat.st_mtime)})
+        except (OSError, ValueError):
+            items.append({"path": str(name), "bytes": 0, "digest": None, "created_at": None})
+    return items
+
+
 def resume_card(con, card_id):
     """Return a blocked card to the board; its parent graph decides whether it waits."""
     from misaka.core.platform import tasks

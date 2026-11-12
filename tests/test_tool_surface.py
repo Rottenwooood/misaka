@@ -224,20 +224,24 @@ def test_the_last_order_stops_a_card_and_the_process_is_named():
         with closing(tasks.connect(s.database)) as con:
             work.update_plan(con, "req", 0, [{"id": "t_a00001", "title": "One",
                                               "instance_id": "worker", "body": BODY}])
+            with tasks.write_txn(con):
+                con.execute("UPDATE tasks SET status='running' WHERE id='t_a00001'")
             coordination.install(Harness(), Runtime(), lambda: con, "lo")
             result = asyncio.run(tools["misaka_task"].execute(
-                "call", {"command": {"action": "stop", "cards": ["t_a00001"]}},
+                "call", {"command": {"action": "cancel", "cards": ["t_a00001"]}},
                 None, None, None))
             assert calls == [("t_a00001", True)]
-            assert '"state": "stopped"' in result["content"][0]["text"]
+            assert '"status": "stopped"' in result["content"][0]["text"]
 
             class NoPane:
                 async def stop(self, card_id, *, confirmed, context):
                     raise ValueError("Card is not running in a pane.")
 
+            with tasks.write_txn(con):
+                con.execute("UPDATE tasks SET status='running' WHERE id='t_a00001'")
             coordination.install(Harness(), NoPane(), lambda: con, "lo")
             asyncio.run(tools["misaka_task"].execute(
-                "call", {"command": {"action": "stop", "cards": ["t_a00001"]}},
+                "call", {"command": {"action": "cancel", "cards": ["t_a00001"]}},
                 None, None, None))
             assert tasks.get(con, "t_a00001")["status"] == "stopped"
     finally:

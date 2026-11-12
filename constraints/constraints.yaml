@@ -1,0 +1,48 @@
+# 本轮工具扩展的约束清单。来源：2026-11-13 用户给出的六组工具需求。
+id: tool-surface-2026-11-13
+stage: S1
+
+C1_scope:
+  in:
+    - "misaka_task：cancel（软取消/硬删除，运行中先终止进程）、delete_request、review（done 接受/打回，blocked 可接受）、result、results、artifacts"
+    - "SendMessage 投递到 blocked 卡时解除挂起，使排队消息在下一回合被读到"
+    - "现有 stop 动作并入 cancel，不保留同一能力的第二个名字"
+  out:
+    - "不新增 misaka_memory：需要新的存储、作用域与过期语义，单独立项"
+    - "不新增 misaka_usage：现有 metering 只服务预算租约，没有按卡的代价持久化，先补数据再谈查询"
+    - "不新增 misaka_subscription 工具：中心已有 list/put/delete，先把读接口接上再决定形状"
+    - "不新增 workspace.create/config/delete：涉及目录初始化与配置落盘，需要单独定语义"
+    - "不做 permissions.network=false 的强制：当前没有沙箱，写出一个不生效的开关等于撒谎"
+  rationale: "一次只交付一组能被端到端验收的能力；重复的名字先合并，缺数据的查询先补数据。"
+
+C2_artifacts:
+  files:
+    - "misaka/core/network/wiring/coordination.py"
+    - "misaka/core/platform/work.py"
+    - "misaka/core/platform/tasks.py"
+    - "misaka/core/network/messages.py"
+    - "tests/test_task_tools.py"
+  form: "Python 源码与 pytest 用例，沿用现有模块边界，不新增包"
+
+C3_acceptance:
+  - "取消一张 running 卡：进程终止，状态为 stopped，再次 cancel 返回 deleted 或明确的终态"
+  - "硬删除后：卡、事件、订阅一并消失，list 中不再出现"
+  - "删除含 active 卡的请求：force=false 返回 blocked/has_active_cards；force=true 后请求与卡都不在"
+  - "对 done 卡 review accept：状态仍为 done；reject：状态回 ready，generation 加一，feedback 出现在下一轮"
+  - "result/artifacts 对 done 卡返回摘要与产出，对未完成卡返回空摘要"
+  - "向 blocked 卡发消息后卡回到就绪，消息在收件箱中可读"
+  - "全量 pytest 通过；ruff 对改动文件无新增告警"
+
+C4_commands:
+  - "timeout 300 .venv/bin/python -m pytest -q <目标文件>"
+  - "timeout 1200 .venv/bin/python -m pytest -q"
+  - ".venv/bin/ruff check <改动文件>"
+
+C5_forbidden:
+  - "不删除或改写用户已有的看板数据（除验收夹具中的临时库）"
+  - "不 push、不改 remote、不改写已推送历史"
+  - "不把密钥写入日志、测试或提交"
+
+C6_budget:
+  time: "本轮 90 分钟内完成 S1 并提交；其余组各自独立成阶段"
+  cost: "只跑本地测试，不调用外部模型或付费接口"

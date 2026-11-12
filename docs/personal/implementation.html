@@ -157,7 +157,8 @@ history_isolations(instance_id, epoch, label, session_file, created_at)
 <strong>结束卡片。</strong>worker → 状态落库 → SubscriptionSync.clear_card → 释放实例。<br>
 <strong>建实例。</strong>协调工具 → 三种输入之一 → 需要时先建版本节点 → 建实例并返回编号。<br>
 <strong>隔离历史。</strong>HistoryIsolation.isolate → 历史层建根 → 组装时只取可见根。<br>
-<strong>停止卡片。</strong>协调工具 stop → 面板终止该卡所在 pane → 落库为 stopped；没有 pane 托管时只落库。<br>
+<strong>取消卡片。</strong>协调工具 cancel（hard=false）→ 面板终止该卡所在 pane → 落库为 stopped；hard=true 再删除卡片、事件与订阅。没有 pane 托管时只动看板。<br>
+<strong>验收卡片。</strong>review accept 保持完成（挂起卡直接结案）；reject 回到就绪、代次加一、理由写入下一轮输入。<br>
 <strong>恢复卡片。</strong>协调工具 resume → 清除挂起原因 → 依赖关系决定回到待做还是就绪。<br>
 <strong>向未启动的卡片发消息。</strong>发布前先声明目标实例的端点与直投订阅，再按编号投递；会话启动时读到。</p>
 <p>工具读写同一个形状：列表按列表返回，省略的字段保持原值；返回值可以原样写回。模板配置在工具 schema 中是六个有名字段（system、model、thinking、tools、skills、settings），不是自由字典。</p>

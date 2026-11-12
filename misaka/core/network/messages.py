@@ -543,6 +543,19 @@ def _publish(target, body, *, summary, sender, sender_task=None, sender_session=
     return result.get("id") or "queued"
 
 
+def _wake_blocked_card(task_id):
+    """A card waiting for a person is no longer waiting once that person writes to it."""
+    from misaka.core.platform import tasks as board_tasks
+
+    con = board_tasks.connect(_board_path())
+    try:
+        row = board_tasks.get(con, task_id)
+        if row is not None and row["status"] == "blocked":
+            board_tasks.unblock_task(con, task_id)
+    finally:
+        con.close()
+
+
 def _resume_waiting_card(task_id):
     """A card parked for an answer starts again once one arrives."""
     from misaka.core.platform import tasks as board_tasks
@@ -558,6 +571,7 @@ def _resume_waiting_card(task_id):
 
 def post(target, body, *, summary, sender, sender_task=None, sender_session=None):
     """Queue one message for a resolved ``target``; one for a contact session wakes it.
+    A message to a blocked card also lifts the block, so the queued text reaches its next turn.
     Returns the message id. Blocking sqlite and a process start: keep it off an event loop."""
     con = connect()
     try:
@@ -565,6 +579,8 @@ def post(target, body, *, summary, sender, sender_task=None, sender_session=None
                    generation=target["generation"], to_task=target["to_task"],
                    to_session=target["to_session"], sender_task=sender_task,
                    sender_session=sender_session)
+        if target["to_task"]:
+            _wake_blocked_card(target["to_task"])
     finally:
         con.close()
     if target.get("to_task"):
