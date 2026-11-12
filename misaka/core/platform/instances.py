@@ -23,6 +23,19 @@ from misaka.core.platform import processes, tasks, work
 _CURRENT = contextvars.ContextVar("instance_writer", default=None)
 CONFIG_KEYS = frozenset({"system", "model", "thinking", "tools", "skills", "settings"})
 
+# What a role starts with when its template does not name a tool list. Last Order coordinates:
+# management and messages, no file or command tools. A template may list any tool its role
+# provides, so a person who wants a Last Order that reads files can say so on the node.
+# A Sister's entry is None: every tool its role provides.
+DEFAULT_TOOLS = {
+    "last-order": ("misaka_task", "misaka_roster", "SendMessage"),
+}
+
+
+def default_tools(role):
+    """The role's default tool list, or None when the role starts with every tool."""
+    return DEFAULT_TOOLS.get("last-order" if role == "last-order" else "sister")
+
 
 def validate_config(value):
     if not isinstance(value, dict):

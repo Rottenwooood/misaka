@@ -115,7 +115,8 @@ misaka/
     <tr><td>network/dispatch.py</td><td>启动前建立订阅，结束时删除；按卡片范围装配执行</td><td>订阅随卡片生命周期</td></tr>
     <tr><td>network/worker.py</td><td>执行时读取范围与禁令</td><td>同上</td></tr>
     <tr><td>network/messages.py</td><td>发送改为中心发布；接收改为去重后注入</td><td>通信走中心</td></tr>
-    <tr><td>network/wiring/network.py</td><td>Last Order 的工具表移除修改文件与执行命令两类</td><td>Last Order 不动手</td></tr>
+    <tr><td>network/wiring/network.py</td><td>不再按角色硬性移除工具；默认集在装配时应用</td><td>Last Order 默认不动手，但能力可由节点配置</td></tr>
+    <tr><td>platform/instance_part.py</td><td>设置了模板工具列表就用它；未设置时用角色默认集</td><td>默认集缺失时拒绝装配，避免静默空转</td></tr>
     <tr><td>network/wiring/coordination.py</td><td>增加订阅管理与发消息两个工具</td><td>管理入口</td></tr>
     <tr><td>ui/task_view/canvas.py</td><td>读取新增列，显示范围与禁令</td><td>视图与数据一致</td></tr>
     <tr><td>cli/view.py</td><td>同上</td><td>同上</td></tr>
@@ -163,7 +164,7 @@ subscriptions(
     <tr><td>零 清理</td><td>tasks.py、work.py、instances.py</td><td>从空库建库；无覆盖字段；无旧卡片文件读取</td></tr>
     <tr><td>一 版本树</td><td>work.py、instances.py、wiring/coordination.py</td><td>三种输入各建一个实例；节点有父版本</td></tr>
     <tr><td>二 卡片与订阅</td><td>tasks.py、dispatch.py、worker.py</td><td>启动建订阅，结束删订阅；范围与禁令落库</td></tr>
-    <tr><td>三 工具面</td><td>wiring/network.py、coordination.py</td><td>Last Order 无文件与命令工具；管理工具可用</td></tr>
+    <tr><td>三 工具面</td><td>instance_part.py、wiring/network.py、coordination.py</td><td>默认工具集生效；节点显式增加的工具可用；管理工具只给 Last Order</td></tr>
     <tr><td>四 通信</td><td>messaging/*、messages.py</td><td>事件能到达实例；重投不重复；人不回复无影响</td></tr>
     <tr><td>五 上下文动作</td><td>context/*</td><td>标签、隔离、技能候选可用</td></tr>
     <tr><td>六 视图</td><td>canvas.py、view.py</td><td>视图与数据库一致；引用进对话可读</td></tr>

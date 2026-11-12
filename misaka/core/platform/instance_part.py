@@ -19,12 +19,23 @@ class InstancePart:
         if not manager.isPersisted():
             raise ValueError("An instance needs a persisted native session")
         instances.bind_current(self.spec.instance_id, manager.getSessionFile())
-        config = instances.get(self.spec.instance_id)["config"]
+        item = instances.get(self.spec.instance_id)
+        config = item["config"]
+        available = {t.name for t in self.session.getAllTools()}
         if "tools" in config:
-            available = {t.name for t in self.session.getAllTools()}
             if missing := set(config["tools"]) - available:
                 raise ValueError(f"Unknown configured tools: {sorted(missing)}")
             self.session.setActiveToolsByName(config["tools"])
+        else:
+            defaults = list(instances.default_tools(item["role"]) or ())
+            if missing := set(defaults) - available:
+                if self.spec.kind in ("foreground", "dm"):
+                    raise ValueError(
+                        f"Default tools are not registered: {sorted(missing)}"
+                    )
+                defaults = [name for name in defaults if name in available]
+            if defaults:
+                self.session.setActiveToolsByName(defaults)
 
     async def before_agent_start(self, event, _ctx):
         if self.spec.role == "last_order":
