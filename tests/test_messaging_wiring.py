@@ -47,11 +47,15 @@ def test_a_direct_message_is_published_to_the_instance(monkeypatch):
                             "to": ["worker-1"]}]
 
 
-def test_no_centre_means_no_publish(monkeypatch):
+def test_no_centre_refuses_to_send(monkeypatch):
     from misaka.core.messaging import config
     monkeypatch.setattr(config, "center", lambda: None)
-    assert messages._publish({"to_task": "t_a00001"}, "hello", summary="hi",
-                             sender="last-order") is None
+    try:
+        messages._publish({"to_task": "t_a00001"}, "hello", summary="hi", sender="last-order")
+    except RuntimeError as error:
+        assert "No message centre" in str(error)
+    else:
+        raise AssertionError("a message without a centre must not be sent")
 
 
 def test_a_delivery_without_a_card_reaches_the_instances_live_session(monkeypatch):

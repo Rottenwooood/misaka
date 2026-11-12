@@ -61,8 +61,11 @@
   <li>安装中心，初始化数据目录，启动服务。</li>
   <li>在中心建立三个身份：Last Order、一个执行者、一个管理身份。每个身份只拿到一次令牌。</li>
   <li>在中心登记接收目标：Last Order 一个，执行者按实例登记；目标类型为本机回调。</li>
-  <li>在 MISAKA 写入中心地址与令牌，指向数据目录。</li>
-  <li>建立第一个 Last Order 实例，指定模板节点。</li>
+  <li>在 MISAKA 的环境里写入中心地址、令牌、本机回调地址与身份名：
+      <code>MISAKA_CENTER_URL</code>、<code>MISAKA_CENTER_TOKEN</code>、
+      <code>MISAKA_INBOX_URL</code>、<code>MISAKA_CENTER_IDENTITY</code>。</li>
+  <li>运行 <code>misaka state bootstrap</code> 建立第一个协调者模板与实例。</li>
+  <li>运行 <code>misaka inbox serve --port 8710</code> 起回调，或交给服务管理。</li>
   <li>指定一个项目目录，启动会话。</li>
 </ol>
 <p>完成以上八步后，人在会话里说话即可唤起 Last Order，无需再做任何手工配置。</p>
@@ -91,6 +94,8 @@ notifs endpoint put --config '{"name":"last-order","owner":"last-order","deliver
     <tr><td>回调端口</td><td>MISAKA 接收投递的端口</td><td>由启动时分配</td></tr>
     <tr><td>刷新周期</td><td>视图读取数据库的间隔</td><td>0.5 秒</td></tr>
     <tr><td>触发频率</td><td>每个接收者的最高投递频率</td><td>2 秒一次，空闲时立即投递</td></tr>
+    <tr><td>回调地址</td><td>中心把投递 POST 到哪里</td><td><code>http://127.0.0.1:8710/messages</code></td></tr>
+    <tr><td>中心身份名</td><td>登记目标时使用的身份</td><td><code>misaka</code></td></tr>
   </tbody>
 </table>
 
@@ -100,6 +105,7 @@ notifs endpoint put --config '{"name":"last-order","owner":"last-order","deliver
   <thead><tr><th>服务</th><th>启动命令</th><th>重启策略</th></tr></thead>
   <tbody>
     <tr><td>中心</td><td>中心自带的启动命令</td><td>总是重启，间隔 5 秒</td></tr>
+    <tr><td>回调</td><td><code>misaka inbox serve --port 8710</code></td><td>总是重启，间隔 5 秒</td></tr>
     <tr><td>MISAKA 后台</td><td>打开面板与后台的命令</td><td>总是重启，间隔 5 秒</td></tr>
   </tbody>
 </table>
