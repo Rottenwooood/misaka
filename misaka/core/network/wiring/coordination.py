@@ -29,12 +29,9 @@ class CardSubscription(Command):
 class PlanCard(Command):
     id: CardId
     title: str | None = None
-    body: str | None = Field(None, description="Contract including a testable ## acceptance criteria section.")
-    instance_id: str | None = None
+    body: str | None = Field(None, description="The contract; it must have an ## acceptance criteria section.")
+    instance: str | None = Field(None, description="The Sister instance this card runs on.")
     needs: list[CardId] | None = None
-    priority: int | None = None
-    model: str | None = None
-    reviewer: str | None = None
     fs_scope: list[str] | None = Field(None, description="Paths this card may touch.")
     forbidden_commands: list[str] | None = Field(None, description="Command patterns this card must not run.")
     subscriptions: list[CardSubscription] | None = None
@@ -48,17 +45,17 @@ class SavePlan(Command):
     workspace: str | None = Field(None, description="Project directory, required for a new request.")
     title: str | None = None
     body: str | None = None
-    cards: list[PlanCard] = Field(default_factory=list, description="New cards and patches to unstarted cards. Omitted fields are unchanged.")
+    cards: list[PlanCard] = Field(default_factory=list, description="New cards and patches to unstarted cards; omitted fields are unchanged.")
 
 
 class DispatchCard(Command):
     id: CardId
-    generation: int = Field(ge=1, description="Generation from the saved plan.")
+    generation: int | None = Field(None, ge=1, description="Omit to start the card as it is now; pass it to refuse a stale edit.")
 
 
 class StartCards(Command):
     action: Literal["start"]
-    cards: list[DispatchCard] = Field(min_length=1, description="Explicit cards to start, with the generations you intend to run.")
+    cards: list[DispatchCard] = Field(min_length=1, description="Cards to start.")
 
 
 class TaskParams(Command):
@@ -80,8 +77,7 @@ class ReviseTemplate(Command):
     action: Literal["revise_template"]
     id: str
     expected_revision: int = Field(ge=1)
-    config: dict[str, Any]
-    parent_revision: int | None = Field(None, ge=1)
+    config: dict[str, Any] = Field(description="The node's full session configuration.")
 
 
 class CreateInstance(Command):
@@ -89,8 +85,12 @@ class CreateInstance(Command):
     id: str
     template_id: str
     template_revision: int | None = Field(None, ge=1)
-    config: dict[str, Any] | None = None
-    role: Literal["last-order", "sister"] | None = None
+    config: dict[str, Any] | None = Field(
+        None,
+        description="With template_revision: changes merged over that node, which becomes a new node. "
+                    "Without: the full configuration of a new template, and role is required.")
+    role: Literal["last-order", "sister"] | None = Field(
+        None, description="Only for a new template; a pinned node already has one.")
     label: str | None = None
 
 
@@ -141,13 +141,26 @@ def _data(label, value):
             "details": {}}
 
 
-def _roster_config(item):
-    config = dict(item["config"])
-    local_settings = bool(config.pop("settings", None))
-    fields = ("id", "revision", "parent_revision", "role", "label", "template_id",
-              "template_revision", "retired")
-    return {**{key: item[key] for key in fields if key in item},
-            "config": config, "local_settings": local_settings}
+def _roster_view(state):
+    """Latest node per template and the instances; nothing constant, nothing historical."""
+    latest = {}
+    for node in state["templates"]:
+        if node["id"] not in latest or node["revision"] > latest[node["id"]]["revision"]:
+            latest[node["id"]] = node
+    templates = []
+    for node in latest.values():
+        row = {key: node[key] for key in ("id", "revision", "role")}
+        if node.get("config"):
+            row["config"] = node["config"]
+        templates.append(row)
+    instances = []
+    for item in state["instances"]:
+        row = {key: item[key] for key in ("id", "label", "template_id", "template_revision")
+               if item.get(key) is not None}
+        if item.get("retired"):
+            row["retired"] = True
+        instances.append(row)
+    return {"templates": templates, "instances": instances}
 
 
 def install(collector, runtime, connection, owner_id):
@@ -171,23 +184,33 @@ def install(collector, runtime, connection, owner_id):
             if isinstance(command, ShowTask):
                 return _data("work-plan", work.owned_state(con, owner, command.request_id))
             if isinstance(command, SavePlan):
-                request = work.save_plan(con, owner, **command.model_dump(exclude_unset=True, exclude={"action"}))
+                values = command.model_dump(exclude_unset=True, exclude={"action"})
+                values["cards"] = [
+                    {("instance_id" if key == "instance" else key): value
+                     for key, value in card.items()}
+                    for card in values.get("cards") or ()
+                ]
+                request = work.save_plan(con, owner, **values)
                 return _data("work-plan", work.owned_state(con, owner, request["id"]))
-            targets = {card.id: card.generation for card in command.cards}
-            if len(targets) != len(command.cards):
-                raise ValueError("Each start target must appear only once")
+            targets = {}
+            for card in command.cards:
+                if card.id in targets:
+                    raise ValueError("Each start target must appear only once")
+                targets[card.id] = card.generation
             for card_id, generation in targets.items():
                 work.dispatch_target(con, owner, card_id, generation)
         receipts = []
         for card_id, generation in targets.items():
             try:
+                if generation is None:
+                    generation = work.card_generation(con, card_id)
                 receipt = await runtime.launch(card_id, owner_id=owner, expected_generation=generation)
             except OSError as error:
                 # A lost RPC reply cannot prove the daemon did not start the worker.
                 receipt = {"task_id": card_id, "status": "unknown", "error": str(error)}
             except (RuntimeError, ValueError) as error:
                 receipt = {"task_id": card_id, "status": "error", "error": str(error)}
-            receipts.append(receipt)
+            receipts.append({"id": card_id, "state": receipt.get("status")})
         return _data("launch-receipts", receipts)
 
     @toolkit.register_tool(
@@ -241,8 +264,7 @@ def install(collector, runtime, connection, owner_id):
         with tasks.write_txn(con):
             actor(con)
             if isinstance(command, ShowRoster):
-                return _data("roster", {key: [_roster_config(item) for item in items]
-                                        for key, items in work.roster(con).items()})
+                return _data("roster", _roster_view(work.roster(con)))
             if isinstance(command, SetSubscriptions):
                 item = work.set_instance_subscriptions(
                     con, command.id, [spec.model_dump() for spec in command.subscriptions])

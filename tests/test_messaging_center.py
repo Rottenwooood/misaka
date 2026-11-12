@@ -32,11 +32,14 @@ class FakeCentre:
 
             def do_POST(self):
                 body = self._read()
-                centre.requests.append(("POST", self.path, body, self.headers.get("authorization")))
+                centre.requests.append((
+                    "POST", self.path, body, self.headers.get("authorization"),
+                    self.headers.get("x-notifs-to"), self.headers.get("idempotency-key")))
                 if body.get("type") == "refused":
                     self._reply(422, {"error": "no subscription"})
                 else:
-                    self._reply(200, {"id": body.get("id"), "deduplicated": False, "recipients": []})
+                    self._reply(200, {"id": self.headers.get("idempotency-key"),
+                                      "deduplicated": False, "recipients": []})
 
             def do_PUT(self):
                 body = self._read()
@@ -83,10 +86,10 @@ def centre():
 def test_a_message_is_published_with_the_token(centre):
     client = CenterClient(centre.url, "secret")
     client.send("test.failed", {"card": "t_a00001"}, message_id="m-1", to=["worker"])
-    method, path, body, auth = centre.requests[-1]
+    method, path, body, auth, to, message_id = centre.requests[-1]
     assert (method, path) == ("POST", "/api/messages")
-    assert body == {"type": "test.failed", "content": {"card": "t_a00001"},
-                    "id": "m-1", "to": ["worker"]}
+    assert body == {"type": "test.failed", "content": {"card": "t_a00001"}}
+    assert (to, message_id) == ("worker", "m-1")
     assert auth == "Bearer secret"
 
 

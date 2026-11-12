@@ -33,7 +33,7 @@ def main(report_path=None):
 
     def card(cid, marker, instance, needs=()):
         return {"id": cid, "title": marker, "body": marker + "\n## acceptance criteria\nSubmit a result.",
-                "instance_id": instance, "needs": list(needs)}
+                "instance": instance, "needs": list(needs)}
 
     routes = {
         "PLAN-ONLY": [plan("primary", s.project, [card(B, "WORKER-B", "worker-a", [A]),

@@ -168,7 +168,7 @@ async def test_a_last_order_message_to_a_closed_card_continues_her_session(world
     done = _finished(world, generation=3)
     lo = _live(world, _sid(), role="last-order", space=SPACE_T1)
     out = await _part(lo, sender="last-order")._send(
-        "fixture", {"to": done, "message": "dig into the 1803 budget", "summary": "more"},
+        "fixture", {"to": done, "message": "dig into the 1803 budget"},
         None, None, SimpleNamespace())
     assert calls == [("pane.continue_card", {"task_id": done,
                                              "say": "[Message from last-order · session " + lo + ". If it asks you something, answer with SendMessage; a note that asks nothing needs no reply. Then complete the card again with misaka_card_complete -- your deliverable stands unless you change it.]\ndig into the 1803 budget",
@@ -229,7 +229,7 @@ async def test_no_candidate_leaves_the_contact_session_and_wakes_it(world, monke
                         lambda argv, **kw: spawned.append((argv, kw["env"])) or SimpleNamespace())
     monkeypatch.setenv("MISAKA_NET_SPACE", SPACE_T2)
     me = _live(world, _sid(), role="10037", space=SPACE_T2)
-    out = await _part(me, sender="10037")._send("fixture", {"to": "10038", "message": "hello", "summary": "hi"},
+    out = await _part(me, sender="10037")._send("fixture", {"to": "10038", "message": "hello"},
                                                None, None, SimpleNamespace())
     assert out["details"]["contact"] is True
     assert out["details"]["to_task"] is None and out["details"]["to_session"] is None
@@ -390,9 +390,9 @@ async def test_two_spaces_with_10036_and_10037_each_do_not_cross(world, monkeypa
     t2_37 = _live(world, _sid(), role="10037", space=SPACE_T2)
 
     from_t2 = await _part(t2_37, sender="10037")._send(
-        "fixture", {"to": "10036", "message": "T2 window note", "summary": "t2"}, None, None, SimpleNamespace())
+        "fixture", {"to": "10036", "message": "T2 window note"}, None, None, SimpleNamespace())
     from_t1 = await _part(t1_37, sender="10037", card_task=card37)._send(
-        "fixture", {"to": "10036", "message": "T1 card note", "summary": "t1"}, None, None, SimpleNamespace())
+        "fixture", {"to": "10036", "message": "T1 card note"}, None, None, SimpleNamespace())
     assert from_t2["details"]["to_session"] == t2_36 and from_t2["details"]["to_task"] is None
     assert from_t1["details"]["to_task"] == card36 and from_t1["details"]["to_session"] is None
 
@@ -426,17 +426,17 @@ async def test_a_help_request_goes_to_a_last_order_and_is_pinned(world, monkeypa
     lo = _live(world, _sid(), role="last-order", space=SPACE_T1)
     part = _part(me, sender="10032", card_task=card)
     with pytest.raises(ValueError, match="must go to a Last Order"):
-        await part._send("fixture", {"to": "10038", "message": "help", "summary": "help", "request_input": True},
-                         None, None, SimpleNamespace())
-    with pytest.raises(ValueError, match="is for a Sister task card"):
-        await _part(lo, sender="last-order")._send(
-            "fixture", {"to": "10032", "message": "x", "summary": "x", "request_input": True},
+        await part._ask("fixture", {"to": "10038", "message": "help"},
+                        None, None, SimpleNamespace())
+    with pytest.raises(ValueError, match="Only a card can ask and wait"):
+        await _part(lo, sender="last-order")._ask(
+            "fixture", {"to": "10032", "message": "x"},
             None, None, SimpleNamespace())
     published = {}
     monkeypatch.setattr(messages, "_publish",
                         lambda target, body, **kw: published.update({"target": target, "body": body, **kw}) or "m-1")
-    out = await part._send("fixture", {"to": "last-order", "message": "which archive?", "summary": "help",
-                                       "request_input": True}, None, None, SimpleNamespace())
+    out = await part._ask("fixture", {"to": "last-order", "message": "which archive?"},
+                          None, None, SimpleNamespace())
     assert out["details"]["to_session"] == lo and "parked" in out["content"][0]["text"]
     assert tasks.get(world.board, card)["status"] == "blocked"
     assert published["sender_task"] == card and published["sender_session"] == me

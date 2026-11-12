@@ -482,7 +482,21 @@ def _target_instance(target):
     if target.get("to_session"):
         record = session_catalog.live_session(target["to_session"])
         return record.get("instance_id") if record else None
-    return None
+    addr = target.get("to_addr")
+    if not isinstance(addr, str) or not addr:
+        return None
+    con = board_tasks.connect(_board_path())
+    try:
+        if addr == "last-order":
+            rows = con.execute(
+                "SELECT i.id FROM instances i JOIN templates t ON t.id=i.template_id "
+                "AND t.revision=i.template_revision WHERE t.role='last-order' AND i.retired=0"
+            ).fetchall()
+            return rows[0]["id"] if len(rows) == 1 else None
+        row = con.execute("SELECT id FROM instances WHERE id=? AND retired=0", (addr,)).fetchone()
+        return row["id"] if row is not None else None
+    finally:
+        con.close()
 
 
 def _publish(target, body, *, summary, sender, sender_task=None, sender_session=None):
@@ -538,12 +552,13 @@ def post(target, body, *, summary, sender, sender_task=None, sender_session=None
     return mid
 
 
-def send_as(sender, addr, message, summary, *, request_input=False, card_task=None,
+def send_as(sender, addr, message, summary=None, *, request_input=False, card_task=None,
             sender_session=None, space=None, contact=False):
     """SendMessage, whoever sends it: a misaka session's tool or an ally's MCP bridge.
 
     Resolves the one recipient, queues the row (parking this card first for a help request) and
     returns the tool result. Blocking: sqlite and, for a contact session, a process start."""
+    summary = summary or message.strip().splitlines()[0][:80]
     target = resolve_address(addr, sender=sender, space=space, sender_task=card_task,
                              sender_session=sender_session, contact=contact)
     if request_input and target["to_addr"] != "last-order":
@@ -807,25 +822,26 @@ class SendMessageParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     to: str = Field(description=(
-        "A card id (t_xxxxxx) reaches the session running that card; a session id reaches that one "
-        "conversation. A finished card, or its closed session, is woken in her own session with this "
-        "message as her next turn; a card that has not started gets it when it does. Inside a research "
-        "run a name means that role's card in the run; otherwise a name (last-order, or a Sister id such "
-        "as 10032) reaches "
-        "the one session of that role in your space, or her contact session when none is there; "
-        "with several there the message is refused and they are listed by id."))
-    message: str = Field(description="Plain text message content")
-    summary: str = Field(description="Short, non-empty preview shown in the UI")
-    request_input: bool = Field(
-        default=False,
-        description=(
-            "Only for a task card asking a Last Order (last-order, or a Last Order's session id): park "
-            "this attempt until she replies. "
-            "Leave false for ordinary messages; they never change card state."
-        ),
-    )
+        "A card id, a session id, an instance id, or the name of one role in your space. "
+        "A finished card is woken in her own session."))
+    message: str = Field(description="Plain text; it is the whole message.")
 
-    @field_validator("message", "summary")
+    @field_validator("message")
+    @classmethod
+    def nonempty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+
+class AskParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    to: str = Field(default="last-order", description="The Last Order to ask.")
+    message: str = Field(description="What you need decided, in one question.")
+
+    @field_validator("message")
     @classmethod
     def nonempty(cls, value: str) -> str:
         value = value.strip()
@@ -855,36 +871,49 @@ class MessagesPart:
             label="Send Message",
             description=(
                 "Send a message to one running agent at its next tool boundary, or wake a role's "
-                "contact session for one asynchronous turn. Ordinary messages never change card "
-                "state or authorize work."
-                + (" Only request_input=true to a Last Order parks this card for input before "
-                   "queuing a help request." if self.card_task else "")
-            ),
+                "contact session for one asynchronous turn. A message never changes card state "
+                "or authorizes work."),
             parameters=SendMessageParams.model_json_schema(),
             execute=self._send,
             promptSnippet="Send a message to another agent",
             promptGuidelines=(
-                ["Use ordinary SendMessage for updates; continue working without waiting for a reply.",
+                ["Use SendMessage for updates; continue working without waiting for a reply.",
                  ("A name reaches the one session of that role in your space; when several share it, "
-                  "address one by its card id or session id (both are in the mail it sent you, and the "
-                  "refusal lists them)."),
-                 ("When external input or a decision is indispensable, send to your Last Order with "
-                  "request_input=true, explain the exact help needed, and stop after successful parking.")]
+                  "address one by its card id or session id.")]
                 if self.card_task else []),
         )]
+        if self.card_task:
+            self.tools.append(ToolDefinition(
+                name="AskLastOrder",
+                label="Ask Last Order",
+                description="Ask the Last Order to decide something and park this card until the answer "
+                            "arrives. Use it only when the missing input blocks the work.",
+                parameters=AskParams.model_json_schema(),
+                execute=self._ask,
+                promptSnippet="Ask Last Order and wait for an answer",
+                promptGuidelines=[
+                    "Explain the exact decision needed; the card stops until an answer comes back.",
+                ],
+            ))
 
     def attach(self, session):
         self.session = session
 
     async def _send(self, tool_call_id, raw, signal, on_update, ctx):
         args = raw if isinstance(raw, SendMessageParams) else SendMessageParams(**(raw or {}))
-        addr = args.to.strip()
-        if args.request_input and not self.card_task:
-            raise ValueError("request_input=true is for a Sister task card asking a Last Order for input.")
-        # CCB SendMessage resolves the caller's agent registry before teammates. The card
-        # help protocol goes to a Last Order, never to a child that shares a name.
-        if self.route is not None and not args.request_input:
-            hit = await self.route(addr, args.message, args.summary, ctx)
+        return await self._deliver(args.to, args.message, request_input=False, ctx=ctx)
+
+    async def _ask(self, tool_call_id, raw, signal, on_update, ctx):
+        args = raw if isinstance(raw, AskParams) else AskParams(**(raw or {}))
+        if not self.card_task:
+            raise ValueError("Only a card can ask and wait; send an ordinary message instead.")
+        return await self._deliver(args.to, args.message, request_input=True, ctx=ctx)
+
+    async def _deliver(self, to, message, *, request_input, ctx):
+        addr = to.strip()
+        summary = message.strip().splitlines()[0][:80]
+        if self.route is not None and not request_input:
+            hit = await self.route(addr, message, summary, ctx)
             if hit is not None:
                 return {"content": [{"type": "text", "text": json.dumps(hit, ensure_ascii=False)}],
                         "details": hit}
@@ -896,8 +925,8 @@ class MessagesPart:
             # blocking, so all of it runs off the loop.
             from misaka.core import session_catalog
             record = session_catalog.find_session(own_session) if own_session else None
-            return send_as(self.sender, addr, args.message, args.summary,
-                           request_input=args.request_input, card_task=self.card_task,
+            return send_as(self.sender, addr, message, summary,
+                           request_input=request_input, card_task=self.card_task,
                            sender_session=own_session, space=(record or {}).get("space"),
                            contact=self.contact)
 

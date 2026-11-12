@@ -642,17 +642,20 @@ def owned_state(con, owner, request_id=None):
             "SELECT id,title,workspace,revision FROM work_requests WHERE owner_id=? ORDER BY created_at,id", (owner,)
         )]}
     current = owned_request(con, owner, request_id)
-    fields = ("id", "title", "body", "instance_id", "model", "reviewer", "priority",
-              "status", "generation", "review_feedback", "block_reason",
-              "fs_scope", "forbidden_commands", "subscriptions")
     rows = con.execute("SELECT * FROM card_state WHERE request_id=? ORDER BY created_at,id", (request_id,))
-    return {"request": current, "cards": [
-        {key: row[key] for key in fields} | {
-            "needs": tasks.parent_ids(con, row["id"]),
-            "subscriptions": json.loads(row["subscriptions"] or "[]"),
-        }
-        for row in rows
-    ]}
+    cards = []
+    for row in rows:
+        card = {key: row[key] for key in ("id", "title", "body", "status", "generation")
+                if row[key] is not None}
+        card["instance"] = row["instance_id"]
+        card["needs"] = tasks.parent_ids(con, row["id"])
+        card["fs_scope"] = json.loads(row["fs_scope"] or "[]")
+        card["forbidden_commands"] = json.loads(row["forbidden_commands"] or "[]")
+        card["subscriptions"] = json.loads(row["subscriptions"] or "[]")
+        if row["block_reason"]:
+            card["blocked"] = row["block_reason"]
+        cards.append(card)
+    return {"request": current, "cards": cards}
 
 
 def save_plan(con, owner, request_id, *, expected_revision=None, workspace=None,
@@ -683,6 +686,15 @@ def save_plan(con, owner, request_id, *, expected_revision=None, workspace=None,
         return request(con, request_id)
 
 
+def card_generation(con, card_id):
+    from misaka.core.platform import tasks
+
+    row = tasks.get(con, card_id)
+    if row is None:
+        raise ValueError(f"Card not found: {card_id}")
+    return int(row["generation"])
+
+
 def dispatch_target(con, owner, card_id, generation):
     from misaka.core.platform import tasks
 
@@ -691,7 +703,7 @@ def dispatch_target(con, owner, card_id, generation):
         raise ValueError(f"Card not found: {card_id}")
     owned_request(con, owner, row["request_id"])
     ordinary_cards(con, [card_id])
-    if row["generation"] != generation:
+    if generation is not None and int(row["generation"]) != int(generation):
         raise ValueError(f"Card {card_id} generation changed; read the current plan")
     if row["status"] != "ready":
         raise ValueError(f"Card {card_id} is not ready (current status: {row['status']})")

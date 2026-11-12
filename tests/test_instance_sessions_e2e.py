@@ -153,7 +153,10 @@ def main(report_path=None):
         chat("lo", "FRESH-INPUT")
         fresh = json.dumps(received[-1])
         assert all(x not in fresh for x in ("FIRST-PRIVATE-INPUT", "SECOND-INPUT", "ANSWER-PRIVATE-HISTORY")), fresh
-        assert all(x in fresh for x in ("CURRENT-REQUEST", "CURRENT-GOAL", "t_100001", "PINNED-COORDINATOR"))
+        assert "PINNED-COORDINATOR" in fresh
+        # Current state is a query (misaka_roster show), not a prompt injection: the fresh
+        # session starts with the role's rules and nothing carried from the old one.
+        assert "CURRENT-REQUEST" not in fresh and "CURRENT-GOAL" not in fresh
         assert actor("lo")["session_file"] != path and Path(path).is_file()
         check("Last Order 换会话保留旧日志，模型只收到当前规则、模板、实例和未结卡片，没有旧对话细节")
         bad = s.cli("state", "apply", "--file", "-", payload={"operations": [

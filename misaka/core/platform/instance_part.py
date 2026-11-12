@@ -3,7 +3,6 @@ import json
 import logging
 
 from misaka.core.platform import instances
-from misaka.utils.redact import redact
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +56,6 @@ class InstancePart:
                 SubscriptionSync(client, item["id"]).apply(item["id"], specs, prefix="instance")
         except Exception:
             logger.warning("Could not declare instance %s at the centre", item["id"], exc_info=True)
-
-    async def before_agent_start(self, event, _ctx):
-        if self.spec.role == "last_order":
-            state = redact(json.dumps(instances.current_state(self.spec.instance_id), ensure_ascii=False))
-            return {"systemPrompt": event.get("systemPrompt", "") + "\n\n# Current instance state\n" + state}
-
 
 def part(spec):
     return InstancePart(spec) if spec.instance_id else None

@@ -111,6 +111,9 @@ def test_a_card_target_resolves_to_its_instance(monkeypatch):
         try:
             assert messages._target_instance({"to_task": "t_a00001"}) == "worker"
             assert messages._target_instance({"to_task": "t_ffffff"}) is None
+            assert messages._target_instance({"to_addr": "last-order"}) == "lo"
+            assert messages._target_instance({"to_addr": "worker"}) == "worker"
+            assert messages._target_instance({"to_addr": "nobody"}) is None
         finally:
             messages._board_path = original
     finally:

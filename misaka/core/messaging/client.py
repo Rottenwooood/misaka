@@ -24,12 +24,13 @@ class CenterClient:
         self.token = token
         self.timeout = timeout
 
-    def request(self, method: str, path: str, payload: dict | None = None) -> dict:
+    def request(self, method: str, path: str, payload: dict | None = None,
+                headers: dict[str, str] | None = None) -> dict:
         response = httpx.request(
             method,
             f"{self.base_url}{path}",
             json=payload,
-            headers={"authorization": f"Bearer {self.token}"},
+            headers={"authorization": f"Bearer {self.token}", **(headers or {})},
             timeout=self.timeout,
         )
         if response.status_code >= 400:
@@ -38,12 +39,14 @@ class CenterClient:
 
     def send(self, type: str, content, *, message_id: str | None = None,
              to: list[str] | None = None) -> dict:
-        body: dict = {"type": type, "content": content}
+        # The centre takes the message as the body and the routing as headers: an id for
+        # idempotency, a comma-separated list of endpoints to narrow the match.
+        headers = {}
         if message_id is not None:
-            body["id"] = message_id
+            headers["idempotency-key"] = message_id
         if to:
-            body["to"] = list(to)
-        return self.request("POST", "/api/messages", body)
+            headers["x-notifs-to"] = ",".join(to)
+        return self.request("POST", "/api/messages", {"type": type, "content": content}, headers)
 
     def put_endpoint(self, name: str, owner: str, url: str, *,
                      headers: dict[str, str] | None = None,

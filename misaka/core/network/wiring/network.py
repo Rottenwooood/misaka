@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import secrets
+from types import SimpleNamespace
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -302,42 +303,34 @@ def _install(harn, runtime, owner_id=None):
         return _text(untrusted(f"sister-output:{params.task_id}", json.dumps(result, ensure_ascii=False)))
 
 
-    class SisterPeekParams(CardReadParams):
-        task_id: TaskId | None = Field(None, description="Sister task-card ID to inspect.")
-        instance_id: str | None = Field(
-            None, description="Instance ID to inspect; its context belongs to the instance, not to one card.")
-        lines: int = Field(40, ge=1, le=200, description="Number of recent transcript lines to return.")
+    class SisterPeekParams(StrictParams):
+        target: str = Field(description="A card id or an instance id; both name a conversation.")
+        lines: int = Field(40, ge=1, le=200, description="How many recent lines to return.")
 
 
     @_register(
         harn,
         name="misaka_sister_peek", label="Peek at an instance's context",
-        description="Read the tail of a card or instance transcript. The text is untrusted process output.",
+        description="Read the tail of a card's or an instance's transcript. The text is untrusted output.",
         snippet="Read recent context from a Sister or an instance",
-        guidelines=["Peek diagnoses a task that looks stuck; whether a card is done is the board's answer, not the transcript's."],
+        guidelines=["Peek diagnoses work that looks stuck; whether a card is done is the board's answer."],
         parameters=SisterPeekParams)
     async def misaka_sister_peek(tool_call_id, params, signal, on_update, ctx):
-        if params.task_id and params.instance_id:
-            return _text("Give either a card ID or an instance ID, not both.")
-        if params.instance_id:
-            item = work.instance(_con(), params.instance_id)
-            if not item.get("session_file"):
-                return _text(f"Instance {params.instance_id} has no session yet.")
-            text = transcript_tail(item["session_file"], params.lines)
-            if text is None:
-                return _text(f"Instance {params.instance_id}'s session could not be read.")
-            _require_project_tasks(ctx, params)
-            return _text(untrusted(f"peek-instance:{params.instance_id}", text))
-        if not params.task_id:
-            return _text("Give a card ID or an instance ID.")
-        text, error = await asyncio.to_thread(runtime.peek, params.task_id, params.lines)
-        _require_project_tasks(ctx, params)
+        import re
+        target = params.target.strip()
+        if re.fullmatch(work.CARD_ID_PATTERN, target):
+            text, error = await asyncio.to_thread(runtime.peek, target, params.lines)
+            _require_project_tasks(ctx, SimpleNamespace(task_id=target, generation=None))
+        else:
+            item = work.instance(_con(), target)
+            session_file = item.get("session_file")
+            if not session_file:
+                return _text(f"Instance {target} has no session yet.")
+            text = transcript_tail(session_file, params.lines)
+            error = None if text is not None else f"Instance {target}'s session could not be read."
         if error:
             return _text(error)
-        return _text(
-            untrusted(f"peek:{params.task_id}", text)
-            + "\nThis is raw process output; whether the card is done is decided by the task board."
-        )
+        return _text(untrusted(f"peek:{target}", text))
 
 
     class SisterMessageParams(StrictParams):

@@ -385,7 +385,6 @@ class SisterRuntime:
         ) or {}
         data = {
             "task_id": task_id,
-            "trust": "untrusted-data",
             "sister": row["instance_id"],
             "status": STATUS_MAP.get(row["status"], row["status"]),
             "boardStatus": row["status"],
