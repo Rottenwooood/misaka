@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import sqlite3
 import secrets
 import socket
 from dataclasses import dataclass
@@ -355,6 +356,11 @@ def run_task(con, t, cfg, *, say=None):
             db.mark_failed(con, t["id"], generation=generation, claim_lock=lock)
     final = db.get(con, t["id"])
     if final is not None and final["status"] in ("done", "failed", "stopped"):
+        try:
+            from misaka.core.platform import work as work_model
+            work_model.tag_experience(con, final["id"])
+        except (ValueError, sqlite3.Error):
+            pass
         _clear_subscriptions(final)
     return True
 

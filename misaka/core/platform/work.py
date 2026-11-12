@@ -157,6 +157,27 @@ def derive_node(con, instance_id, patch):
     return revision
 
 
+def tag_experience(con, card_id, label=None):
+    """Mark a finished card's history as an experience the instance may reuse.
+
+    The board stores what happened and where it is; the history layer still holds the
+    conversation. Isolation of the marked range is a separate action.
+    """
+    from misaka.core.platform import tasks
+
+    row = tasks.get(con, card_id)
+    if row is None:
+        raise ValueError(f"Card not found: {card_id}")
+    text = _text(label if label is not None else row["title"], "label")
+    with tasks.write_txn(con):
+        con.execute(
+            "INSERT INTO experience_tags(card_id,instance_id,label,created_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(card_id) DO UPDATE SET label=excluded.label",
+            (card_id, row["instance_id"], text, int(time.time())),
+        )
+    return {"card_id": card_id, "instance_id": row["instance_id"], "label": text}
+
+
 def set_instance_subscriptions(con, instance_id, specs):
     """Replace an instance's long-lived subscriptions; the centre is told by the caller."""
     from misaka.core.platform import tasks

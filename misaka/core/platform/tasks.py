@@ -93,6 +93,12 @@ CREATE TABLE IF NOT EXISTS task_dependencies (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS instance_one_bound ON tasks(instance_id)
  WHERE status IN ('running','review') OR (status IN ('blocked','triage') AND started_at IS NOT NULL);
+CREATE TABLE IF NOT EXISTS experience_tags (
+ card_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+ instance_id TEXT NOT NULL REFERENCES instances(id),
+ label TEXT NOT NULL,
+ created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS card_urls (
  task_id TEXT NOT NULL REFERENCES tasks(id),
  url TEXT NOT NULL,
@@ -170,7 +176,7 @@ CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, kind, id);
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
 """
-TASK_SCHEMA_VERSION = 15
+TASK_SCHEMA_VERSION = 16
 MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 # One failure model for every way an attempt can end badly -- a crash, a timeout, a provider
 # error, a turn that ended without settling the card. Each counts against the same limit and the
