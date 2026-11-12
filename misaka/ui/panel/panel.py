@@ -1478,19 +1478,13 @@ def _shell():
 
 
 def _clipboard(text):
-    """Copy to the system clipboard: pbcopy on macOS and the Win32 clipboard on Windows (what
-    herdr does), otherwise OSC 52 and let the terminal handle it."""
-    import subprocess
-    try:
-        if WINDOWS:
-            from misaka.utils import win_clipboard
-            win_clipboard.copy(text)
-        else:
-            subprocess.run(["pbcopy"], input=text.encode(), check=True)
-        return
-    except (OSError, ValueError, subprocess.SubprocessError):
-        pass
-    _write_all(b"\x1b]52;c;" + base64.b64encode(text.encode()) + b"\x07")
+    """Copy through the same backend chain the TUI uses; True when a backend took the text.
+
+    An OSC 52 write is not evidence: GNOME Terminal and other VTE hosts ignore it by
+    default, so the old pbcopy-then-OSC 52 path reported a copy that never happened.
+    """
+    from misaka.utils.clipboard import copy_text_sync
+    return copy_text_sync(text)
 
 
 MAX_CLIPBOARD_TEXT_BYTES = 1024 * 1024
@@ -3474,8 +3468,10 @@ def launch():
         text = selection_text(selection)
         clear_selection()
         if text.strip():
-            _clipboard(text)
-            show_copy_feedback()
+            if _clipboard(text):
+                show_copy_feedback()
+            else:
+                report_failure("Copy failed: install xsel, xclip or wl-clipboard")
 
     def pane_at(x, y):
         """Which pane a zero-based screen cell falls in: ``(pane_id, inner rect)`` for a
@@ -3583,8 +3579,10 @@ def launch():
         selection.finish()
         text = selection_text(selection)
         if text.strip():
-            _clipboard(text)
-            show_copy_feedback()
+            if _clipboard(text):
+                show_copy_feedback()
+            else:
+                report_failure("Copy failed: install xsel, xclip or wl-clipboard")
         if gesture["dragged"]:
             clear_selection()
         else:
@@ -4545,8 +4543,8 @@ def launch():
                             text = base64.b64decode(msg["data"]).decode("utf-8", "replace")
                         except ValueError:
                             text = ""
-                        if text:
-                            _clipboard(text)
+                        if text and not _clipboard(text):
+                            report_failure("A pane's copy did not reach the clipboard")
                     elif msg.get("event") == "exited":
                         # Card exits must reach the daemon's watcher before their pane goes.
                         page = active_tab()

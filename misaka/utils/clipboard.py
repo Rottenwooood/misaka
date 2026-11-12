@@ -77,10 +77,38 @@ async def copy_to_clipboard(text: str) -> None:
 
     if remote or not copied:
         osc52_copied = emit_osc52(text)
-        copied = copied or osc52_copied
+        # A locally written OSC 52 is a request, not a receipt: the terminal may ignore it.
+        # Only a remote session has nothing better, so only there does it count as success.
+        copied = copied or (osc52_copied and remote)
 
     if not copied:
-        raise RuntimeError("Failed to copy to clipboard")
+        raise RuntimeError("Failed to copy to clipboard; install xclip, xsel or wl-clipboard")
+
+
+def copy_text_sync(text: str, *, platform_name: str | None = None, writer: Any = None) -> bool:
+    """Copy without an event loop; returns whether a real clipboard backend took the text.
+
+    The panel's render thread cannot await, and its old path tried pbcopy on every
+    non-Windows host: on Linux that always failed, leaving only an OSC 52 write that a
+    terminal is free to ignore, while the panel still said "copied". This is the same
+    backend chain the TUI uses, minus the native async calls.
+    """
+    name = platform_name or _platform()
+    if name == "win32":
+        try:
+            from misaka.utils import win_clipboard
+            win_clipboard.copy(text)
+            return True
+        except Exception:  # noqa: BLE001, S110 - fall through to the terminal
+            pass
+    else:
+        try:
+            if _copy_via_command(name, text):
+                return True
+        except Exception:  # noqa: BLE001, S110 - fall through to the terminal
+            pass
+    return bool(emit_osc52(text, writer=writer)
+                and (is_remote_session() or name not in ("linux", "darwin")))
 
 
 def _copy_via_command(platform_name: str, text: str) -> bool:
@@ -178,4 +206,5 @@ def _get_native_clipboard() -> _NativeClipboard | None:
 
 
 
-__all__ = ["copy_to_clipboard", "emit_osc52", "is_remote_session", "is_wayland_session"]
+__all__ = ["copy_text_sync", "copy_to_clipboard", "emit_osc52", "is_remote_session",
+           "is_wayland_session"]
