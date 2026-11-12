@@ -126,6 +126,30 @@ def test_a_bad_subscription_shape_is_refused():
         s.close()
 
 
+def test_the_canvas_shows_scope_commands_and_subscriptions():
+    from misaka.ui.task_view.canvas import Canvas
+    s = Scenario()
+    try:
+        s.apply([
+            {"op": "template.create", "id": "lo", "role": "last-order", "config": {"system": "c"}},
+            {"op": "instance.create", "id": "lo", "template_id": "lo", "template_revision": 1},
+        ])
+        seed(s)
+        s.apply([{"op": "plan.update", "request_id": "req", "expected_revision": 0, "cards": [{
+            "id": "t_a00001", "title": "One", "instance_id": "worker", "body": BODY,
+            "fs_scope": ["src"], "forbidden_commands": ["git push"],
+            "subscriptions": [{"source": "tests", "type": "test.failed"}],
+        }]}])
+        from misaka.core.platform.task_snapshot import SnapshotReader
+        reader = SnapshotReader([str(s.project)], s.database)
+        text = Canvas(reader.read()).render(140, 40).plain()
+        assert "范围 src" in text
+        assert "git push" in text
+        assert "tests/test.failed" in text
+    finally:
+        s.close()
+
+
 def test_the_view_snapshot_carries_scope_commands_and_subscriptions():
     s = Scenario()
     try:

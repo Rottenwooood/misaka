@@ -593,46 +593,32 @@ def send_as(sender, addr, message, summary, *, request_input=False, card_task=No
 
 
 def request_help(target, body, message, summary, *, sender, card_task, sender_session):
-    """The card help protocol: the row is held out of every inbox until this attempt is parked
-    for it. If the mailbox write fails the live card is untouched; if parking loses its
-    ownership race the held row is deleted."""
+    """The card help protocol, in two steps: tell the centre, then park this attempt.
+
+    The ask is a message like any other, so it goes through the centre. Parking is local
+    state: the card stops owning its turn until an answer arrives. Publishing first means a
+    parked card is never waiting for an ask nobody received.
+    """
     from misaka.core.platform import tasks
 
     raw_generation = (os.environ.get("MISAKA_SISTER_OWNER_GENERATION")
                       or os.environ.get("MISAKA_USAGE_GENERATION", ""))
     generation = int(raw_generation) if raw_generation.isdigit() else None
-    hold_token = new_lease_token()
-    # The board is opened before anything is queued: a board that will not open queues nothing.
+    claim_lock = (os.environ.get("MISAKA_SISTER_OWNER_CLAIM_LOCK")
+                  or os.environ.get("MISAKA_USAGE_CLAIM_LOCK"))
+    if generation is None or not claim_lock:
+        raise RuntimeError("A help request needs the card's generation and claim lock.")
+    mid = _publish(target, body, summary=summary, sender=sender,
+                   sender_task=card_task, sender_session=sender_session)
     board = tasks.connect(_board_path())
     try:
-        con = connect()
-        try:
-            mid = send(con, target["to_addr"], body, summary=summary, sender=sender,
-                       task_id=card_task, generation=generation, hold_seconds=60,
-                       lease_token=hold_token, to_task=target["to_task"],
-                       to_session=target["to_session"], sender_task=card_task,
-                       sender_session=sender_session)
-            claim_lock = (os.environ.get("MISAKA_SISTER_OWNER_CLAIM_LOCK")
-                          or os.environ.get("MISAKA_USAGE_CLAIM_LOCK"))
-            try:
-                parked = generation is not None and claim_lock and tasks.block_task(
-                    board, card_task, "needs_input", message, generation=generation,
-                    claim_lock=claim_lock, message_id=mid)
-            except BaseException:
-                con.execute("DELETE FROM messages WHERE id=? AND delivered_at IS NULL "
-                            "AND lease_token=?", (mid, hold_token))
-                raise
-            if not parked:
-                con.execute("DELETE FROM messages WHERE id=? AND delivered_at IS NULL "
-                            "AND lease_token=?", (mid, hold_token))
-                raise RuntimeError("Card ownership changed before the help request could be parked.")
-            unclaim(con, [mid], token=hold_token)
-        finally:
-            con.close()
+        parked = tasks.block_task(board, card_task, "needs_input", message,
+                                  generation=generation, claim_lock=claim_lock,
+                                  message_id=mid)
     finally:
         board.close()
-    if not (target["to_task"] or target["to_session"]):
-        wake_contact(target["to_addr"], mid, sender=sender)
+    if not parked:
+        raise RuntimeError("Card ownership changed before the help request could be parked.")
     return mid
 
 

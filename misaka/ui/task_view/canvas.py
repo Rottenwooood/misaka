@@ -1,6 +1,7 @@
 """Live, read-only card canvas. Runs inside an ordinary herdr-compatible PTY pane."""
 
 import codecs
+import json
 import os
 import re
 import select
@@ -303,6 +304,26 @@ class Canvas:
             return "等依赖"
         return STATE.get(node["status"], node["status"])
 
+    @staticmethod
+    def _terms(node):
+        """What this card may touch, must not run, and listens for, on one line."""
+        def listed(values, cap):
+            head = ", ".join(values[:cap])
+            return head + (f" +{len(values) - cap}" if len(values) > cap else "")
+
+        scope = json.loads(node.get("fs_scope") or "[]")
+        bans = json.loads(node.get("forbidden_commands") or "[]")
+        subs = json.loads(node.get("subscriptions") or "[]")
+        parts = []
+        if scope:
+            parts.append("范围 " + listed(scope, 3))
+        if bans:
+            parts.append("禁令 " + listed(bans, 2))
+        if subs:
+            parts.append("订阅 " + "、".join(
+                f"{item.get('source')}/{item.get('type')}" for item in subs[:2]))
+        return " · ".join(parts)
+
     def render(self, cols, rows):
         s = Screen(cols, rows)
         s.text(0, 0, "MISAKA / 任务画布 / 只读 / 任务请求与卡片依赖", "accent")
@@ -388,6 +409,7 @@ class Canvas:
             detail = (
                 "；".join(node["errors"])
                 or node["block_reason"]
+                or self._terms(node)
                 or detail
             )
         s.text(

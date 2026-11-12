@@ -1730,7 +1730,8 @@ def block_task(
         payload = {"kind": kind, "reason": reason, "fingerprint": fingerprint,
                    "recurrence": recurrence}
         if message_id is not None:
-            payload["message_id"] = int(message_id)
+            # A local row id is an integer; a message from the centre is an opaque string.
+            payload["message_id"] = int(message_id) if str(message_id).isdigit() else str(message_id)
         add_event(con, task_id, status, payload, generation=generation)
 
         return status

@@ -432,15 +432,15 @@ async def test_a_help_request_goes_to_a_last_order_and_is_pinned(world, monkeypa
         await _part(lo, sender="last-order")._send(
             "fixture", {"to": "10032", "message": "x", "summary": "x", "request_input": True},
             None, None, SimpleNamespace())
+    published = {}
+    monkeypatch.setattr(messages, "_publish",
+                        lambda target, body, **kw: published.update({"target": target, "body": body, **kw}) or "m-1")
     out = await part._send("fixture", {"to": "last-order", "message": "which archive?", "summary": "help",
                                        "request_input": True}, None, None, SimpleNamespace())
     assert out["details"]["to_session"] == lo and "parked" in out["content"][0]["text"]
     assert tasks.get(world.board, card)["status"] == "blocked"
-    rows = messages.pending(world.mail, "last-order", session_id=lo)
-    assert [(r["task_id"], r["generation"], r["to_session"]) for r in rows] == [(card, 3, lo)]
-    assert messages.pending(world.mail, "last-order", contact=True) == []
-    deliverable, discard = messages.delivery_plan(rows)
-    assert deliverable == {rows[0]["id"]} and discard == set()
+    assert published["sender_task"] == card and published["sender_session"] == me
+    assert "which archive?" in published["body"]
 
 
 def test_catalog_records_its_space_from_the_environment_and_keeps_it(world, monkeypatch):
