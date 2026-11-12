@@ -725,11 +725,32 @@ def configured_anywhere() -> bool:
         return True
 
 
+def _ensure_last_order() -> None:
+    """A fresh home needs one coordinator instance before any card can exist."""
+    from contextlib import closing
+
+    from misaka.config import home
+    from misaka.core.platform import tasks, work
+
+    with closing(tasks.connect(str(home.path("db")))) as con:
+        if con.execute(
+            "SELECT 1 FROM instances i JOIN templates t ON t.id=i.template_id "
+            "AND t.revision=i.template_revision WHERE t.role='last-order'"
+        ).fetchone():
+            return
+        work.apply(con, [
+            {"op": "template.create", "id": "last-order", "role": "last-order", "config": {}},
+            {"op": "instance.create", "id": "lo", "template_id": "last-order",
+             "template_revision": 1},
+        ])
+
+
 def run(section: str | None = None) -> int:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("misaka setup needs a terminal. Without one, configure by hand:\n"
               "  export ANTHROPIC_API_KEY=...   (or another provider's key)\n"
               "  misaka create 10032           (a Sister)\n"
+              "  misaka state bootstrap        (the first Last Order)\n"
               "  misaka init                   (inside the project folder)\n"
               "  misaka auth check", file=sys.stderr)
         return 1
@@ -753,6 +774,7 @@ def run(section: str | None = None) -> int:
         if configured_anywhere():
             ui.print_info("", "A provider is already configured: each prompt shows the current value.")
         ui.run_steps(steps)
+        _ensure_last_order()
         wizard.summary()
         return 0
     except SetupCancelled:

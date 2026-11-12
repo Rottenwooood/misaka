@@ -19,3 +19,18 @@ def test_bootstrap_creates_a_template_and_an_instance_once():
         assert "test/model" in config
     finally:
         s.close()
+
+
+def test_setup_leaves_one_coordinator_behind(tmp_path, monkeypatch):
+    from contextlib import closing
+    from misaka.config import home
+    from misaka.cli import setup as setup_cli
+    from misaka.core.platform import tasks
+
+    monkeypatch.setattr(home, "path", lambda key: tmp_path / "board.db" if key == "db" else tmp_path / key)
+    setup_cli._ensure_last_order()
+    setup_cli._ensure_last_order()
+    with closing(tasks.connect(str(tmp_path / "board.db"))) as con:
+        rows = con.execute("SELECT i.id,t.role FROM instances i JOIN templates t "
+                           "ON t.id=i.template_id AND t.revision=i.template_revision").fetchall()
+    assert [tuple(row) for row in rows] == [("lo", "last-order")]
