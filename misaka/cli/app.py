@@ -51,6 +51,12 @@ def _parser(extension_commands=None):
     state_apply = state_sub.add_parser("apply")
     state_apply.add_argument("--file", required=True, help="JSON operation batch; - reads stdin")
 
+    ib = sub.add_parser("inbox", help="Run the local callback the message centre delivers to")
+    ib_sub = ib.add_subparsers(dest="inbox_cmd", required=True)
+    ib_serve = ib_sub.add_parser("serve", help="Listen on the loopback address")
+    ib_serve.add_argument("--host", default="127.0.0.1")
+    ib_serve.add_argument("--port", type=int, default=8710)
+
     sub.add_parser("board", help="Show the task board")
 
     view = sub.add_parser("view", help="Read-only views; no model or project initialization")
@@ -948,6 +954,11 @@ def _cmd_uninstall(args):
     sys.exit(uninstall.run(mode=args.mode, assume_yes=args.yes, dry_run=args.dry_run))
 
 
+def _cmd_inbox(args):
+    from misaka.cli.inbox import serve
+    return serve(args)
+
+
 COMMANDS = {
     "setup": _cmd_setup,
     "update": _cmd_update,
@@ -966,6 +977,7 @@ COMMANDS = {
     "dm": _cmd_dm,
     "task": _cmd_task,
     "board": _cmd_board,
+    "inbox": _cmd_inbox,
     "view": _cmd_view,
     "state": _cmd_state,
     "research": _cmd_research,

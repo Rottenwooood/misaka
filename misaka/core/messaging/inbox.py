@@ -22,6 +22,29 @@ class Inbox:
     def __init__(self, connect: Callable | None = None) -> None:
         self._connect = connect or messages.connect
 
+    def pending(self) -> list[dict]:
+        """Rows taken but never handed over, oldest first; retried on the next delivery."""
+        con = self._connect()
+        try:
+            rows = con.execute(
+                "SELECT id, endpoint, source FROM inbox_messages "
+                "WHERE delivered_at IS NULL ORDER BY received_at, id").fetchall()
+        finally:
+            con.close()
+        return [{"id": row[0], "endpoint": row[1], "source": row[2]} for row in rows]
+
+    def mark_delivered(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        con = self._connect()
+        try:
+            with con:
+                con.executemany(
+                    "UPDATE inbox_messages SET delivered_at=strftime('%s','now') WHERE id=?",
+                    [(value,) for value in ids])
+        finally:
+            con.close()
+
     def accept(self, payload) -> list[dict]:
         """Store unseen messages by ID and return only the ones this call added."""
         if not isinstance(payload, dict):
@@ -57,7 +80,7 @@ class Inbox:
 class CallbackServer:
     """A local HTTP door the centre posts to; the only listener this process opens."""
 
-    def __init__(self, inbox: Inbox, on_batch: Callable[[list[dict]], None],
+    def __init__(self, inbox: Inbox, on_batch: Callable[[list[dict]], list[str]],
                  host: str = "127.0.0.1", port: int = 0) -> None:
         self.inbox = inbox
         self.on_batch = on_batch
@@ -82,8 +105,10 @@ class CallbackServer:
                     self.send_error(400, "invalid delivery")
                     return
                 try:
-                    if fresh:
-                        on_batch(fresh)
+                    batch = {row["id"]: row for row in inbox.pending()}
+                    batch.update({item["id"]: item for item in fresh})
+                    if batch:
+                        inbox.mark_delivered(on_batch(list(batch.values())))
                 except Exception:
                     # Acknowledging before the work is done would lose the batch.
                     self.send_error(500, "not taken over")
