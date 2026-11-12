@@ -1,8 +1,12 @@
 """Bind native session replacements and current-state handoff to an instance."""
 import json
+import logging
 
 from misaka.core.platform import instances
 from misaka.utils.redact import redact
+
+
+logger = logging.getLogger(__name__)
 
 
 class InstancePart:
@@ -36,6 +40,24 @@ class InstancePart:
                 defaults = [name for name in defaults if name in available]
             if defaults:
                 self.session.setActiveToolsByName(defaults)
+        self._sync_centre(item)
+
+    def _sync_centre(self, item):
+        """Declare this instance and its own subscriptions; a centre outage is not fatal."""
+        from misaka.core.messaging import config, registry
+        from misaka.core.messaging.sync import SubscriptionSync
+
+        client = config.center()
+        url = config.inbox_url()
+        if client is None or url is None:
+            return
+        try:
+            registry.ensure_endpoint(client, item["id"], url)
+            specs = json.loads(item["subscriptions"] or "[]")
+            if specs:
+                SubscriptionSync(client, item["id"]).apply(item["id"], specs, prefix="instance")
+        except Exception:  # noqa: BLE001 - local work continues without the centre
+            logger.warning("Could not declare instance %s at the centre", item["id"], exc_info=True)
 
     async def before_agent_start(self, event, _ctx):
         if self.spec.role == "last_order":

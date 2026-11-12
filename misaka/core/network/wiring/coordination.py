@@ -94,8 +94,15 @@ class CreateInstance(Command):
     label: str | None = None
 
 
+class SetSubscriptions(Command):
+    action: Literal["set_subscriptions"]
+    id: str
+    subscriptions: list[CardSubscription]
+
+
 class RosterParams(Command):
-    command: Annotated[ShowRoster | CreateTemplate | ReviseTemplate | CreateInstance, Field(discriminator="action")]
+    command: Annotated[ShowRoster | CreateTemplate | ReviseTemplate | CreateInstance | SetSubscriptions,
+                       Field(discriminator="action")]
 
 
 def _command_schema(model):
@@ -184,6 +191,13 @@ def install(collector, runtime, connection, owner_id):
             if isinstance(command, ShowRoster):
                 return _data("roster", {key: [_roster_config(item) for item in items]
                                         for key, items in work.roster(con).items()})
+            if isinstance(command, SetSubscriptions):
+                item = work.set_instance_subscriptions(
+                    con, command.id, [spec.model_dump() for spec in command.subscriptions])
+                return _data("instance-subscriptions", {
+                    "id": item["id"],
+                    "subscriptions": json.loads(item["subscriptions"] or "[]"),
+                })
             operation = {CreateTemplate: "template.create", ReviseTemplate: "template.revise",
                          CreateInstance: "instance.create"}[type(command)]
             values = command.model_dump(exclude_none=True, exclude={"action"})

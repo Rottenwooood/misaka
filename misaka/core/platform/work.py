@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS instances (
  template_id TEXT NOT NULL,
  template_revision INTEGER NOT NULL,
  label TEXT NOT NULL,
+ subscriptions TEXT, -- JSON list of source/type pairs this instance listens for
  retired INTEGER NOT NULL DEFAULT 0 CHECK(retired IN (0,1)),
  created_at INTEGER NOT NULL,
  session_epoch INTEGER NOT NULL DEFAULT 1,
@@ -154,6 +155,17 @@ def derive_node(con, instance_id, patch):
         "UPDATE instances SET template_revision=? WHERE id=?", (revision, instance_id)
     )
     return revision
+
+
+def set_instance_subscriptions(con, instance_id, specs):
+    """Replace an instance's long-lived subscriptions; the centre is told by the caller."""
+    from misaka.core.platform import tasks
+
+    instance(con, instance_id)
+    with tasks.write_txn(con):
+        con.execute("UPDATE instances SET subscriptions=? WHERE id=?",
+                    (json.dumps(_subscription_specs(specs), ensure_ascii=False), instance_id))
+    return instance(con, instance_id)
 
 
 def request(con, request_id):

@@ -233,6 +233,19 @@ def live_session(session_id):
     return None
 
 
+def live_instance_session(instance_id):
+    """The catalog record of a live session owned by this instance, or None."""
+    if not instance_id:
+        return None
+    for file in _index_dir().glob("*.json"):
+        value = _object(file)
+        if value.get("instance_id") != instance_id or value.get("state") == "saved":
+            continue
+        if processes.identity_is_alive(value.get("pid"), value.get("identity")):
+            return value
+    return None
+
+
 def live_card_session(task_id):
     """The catalog record of the live session running this card, or None."""
     if not task_id:

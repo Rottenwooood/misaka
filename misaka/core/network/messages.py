@@ -473,6 +473,41 @@ def wake_contact(role, message_id, *, sender):
         logger.warning("Could not start the contact-session wake-up", exc_info=True)
 
 
+def _target_instance(target):
+    """The instance behind a resolved target, or None when the address has no instance."""
+    from misaka.core import session_catalog
+    from misaka.core.platform import tasks as board_tasks
+
+    if target.get("to_task"):
+        con = tasks.connect(_board_path())
+        try:
+            row = board_tasks.get(con, target["to_task"])
+        finally:
+            con.close()
+        return row["instance_id"] if row is not None else None
+    if target.get("to_session"):
+        record = session_catalog.live_session(target["to_session"])
+        return record.get("instance_id") if record else None
+    return None
+
+
+def _publish(target, body, *, summary, sender):
+    """Send through the centre when one is configured; returns the message id or None."""
+    from misaka.core.messaging import config
+
+    client = config.center()
+    if client is None:
+        return None
+    instance_id = _target_instance(target)
+    if not instance_id:
+        return None
+    payload = {"text": body, "summary": summary, "from": sender}
+    if target.get("to_task"):
+        payload["card"] = target["to_task"]
+    result = client.send("direct", payload, to=[instance_id])
+    return result.get("id") or "queued"
+
+
 def post(target, body, *, summary, sender, sender_task=None, sender_session=None):
     """Queue one message for a resolved ``target``; one for a contact session wakes it.
     Returns the message id. Blocking sqlite and a process start: keep it off an event loop."""
@@ -530,8 +565,10 @@ def send_as(sender, addr, message, summary, *, request_input=False, card_task=No
         mid = request_help(target, body, message, summary, sender=sender, card_task=card_task,
                            sender_session=sender_session)
     else:
-        mid = post(target, body, summary=summary, sender=sender, sender_task=card_task,
-                   sender_session=sender_session)
+        mid = _publish(target, body, summary=summary, sender=sender)
+        if mid is None:
+            mid = post(target, body, summary=summary, sender=sender, sender_task=card_task,
+                       sender_session=sender_session)
     contact = not (target["to_task"] or target["to_session"])
     if contact:
         where = "it is being woken to read it"

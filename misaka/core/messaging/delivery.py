@@ -11,6 +11,7 @@ import json
 import logging
 import re
 
+from misaka.core import session_catalog
 from misaka.core.network import messages
 
 logger = logging.getLogger(__name__)
@@ -55,17 +56,22 @@ def deliver(items: list[dict]) -> list[str]:
     settled = []
     for item in items:
         message_id = str(item.get("id") or "")
-        card = card_id(item)
-        if not card:
-            logger.warning("delivery %s names no card; dropped", message_id)
+        address = card_id(item)
+        if not address:
+            endpoint = item.get("endpoint")
+            session = session_catalog.live_instance_session(endpoint)
+            if session is not None:
+                address = session["id"]
+        if not address:
+            logger.warning("delivery %s names no card and no live instance; dropped", message_id)
             settled.append(message_id)
             continue
         try:
-            target = messages.resolve_address(card, sender=sender_of(item), space=None)
+            target = messages.resolve_address(address, sender=sender_of(item), space=None)
             messages.post(target, body=body_of(item), summary=summary_of(item),
                           sender=sender_of(item))
             settled.append(message_id)
         except (ValueError, OSError) as error:
-            logger.warning("delivery %s not taken by %s: %s", message_id, card, error)
+            logger.warning("delivery %s not taken by %s: %s", message_id, address, error)
             settled.append(message_id)
     return settled

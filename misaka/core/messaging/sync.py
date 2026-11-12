@@ -12,17 +12,20 @@ class SubscriptionSync:
         self.endpoint = endpoint
 
     @staticmethod
-    def name_for(card_id: str, index: int) -> str:
-        return f"card:{card_id}:{index}"
+    def name_for(owner_id: str, index: int, prefix: str = "card") -> str:
+        return f"{prefix}:{owner_id}:{index}"
 
-    def apply_card(self, card_id: str, specs: list[dict]) -> list[str]:
-        """Push a card's subscriptions; returns the names now in force."""
+    def apply(self, owner_id: str, specs: list[dict], *, prefix: str = "card") -> list[str]:
+        """Push one owner's subscriptions; returns the names now in force."""
         names = []
         for index, spec in enumerate(specs):
-            name = self.name_for(card_id, index)
+            name = self.name_for(owner_id, index, prefix)
             self.client.put_subscription(name, self.endpoint, spec["source"], spec["type"])
             names.append(name)
         return names
+
+    def apply_card(self, card_id: str, specs: list[dict]) -> list[str]:
+        return self.apply(card_id, specs)
 
     def clear(self, names: list[str]) -> list[str]:
         """Drop subscriptions, returning the names the centre refused to forget."""

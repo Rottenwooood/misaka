@@ -181,7 +181,16 @@ def _apply_subscriptions(con, card, generation, lock):
                      {"count": len(specs)}, generation=generation, claim_lock=lock)
         db.back_to_ready(con, card["id"], generation=generation, claim_lock=lock)
         return False
+    from misaka.core.messaging import registry
+
+    url = center_config.inbox_url()
+    if not url:
+        db.add_event(con, card["id"], "inbox_unconfigured",
+                     {"count": len(specs)}, generation=generation, claim_lock=lock)
+        db.back_to_ready(con, card["id"], generation=generation, claim_lock=lock)
+        return False
     try:
+        registry.ensure_endpoint(client, card["instance_id"], url)
         SubscriptionSync(client, card["instance_id"]).apply_card(card["id"], specs)
     except Exception as error:  # noqa: BLE001 - any failure means no deliveries
         db.add_event(con, card["id"], "subscriptions_failed",
