@@ -7,10 +7,9 @@ person can find it again.
 from __future__ import annotations
 
 import time
-from contextlib import closing
 
 from misaka.config import home
-from misaka.core.platform import instances, processes, work
+from misaka.core.platform import instances, work
 from misaka.core.platform import tasks as board
 
 

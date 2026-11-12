@@ -57,7 +57,7 @@ misaka/
 ├── core/
 │   ├── platform/
 │   │   ├── work.py           修改：模板加父版本；实例去覆盖；订阅读写
-│   │   ├── tasks.py          修改：卡片加范围与禁令；订阅表；建表
+│   │   ├── tasks.py          修改：卡片加范围、禁令与订阅；标签与隔离表；建表
 │   │   ├── instances.py      修改：三种创建输入；去掉覆盖合并
 │   │   ├── session.py        不动
 │   │   └── processes.py      不动
@@ -100,12 +100,11 @@ misaka/
     <tr><td>messaging/client.py</td><td>CenterClient</td><td>与中心通信，本机与远程两种连接</td><td>send、health、pending</td></tr>
     <tr><td>messaging/sync.py</td><td>SubscriptionSync</td><td>把数据库中的订阅推给中心，删除时撤销</td><td>apply_card、clear_card、apply_instance</td></tr>
     <tr><td>messaging/inbox.py</td><td>Inbox</td><td>接收投递、按编号去重、注入实例会话</td><td>accept、seen、inject</td></tr>
-    <tr><td>context/tags.py</td><td>ExperienceTag</td><td>卡片结束时标记一段历史为经历</td><td>tag、list</td></tr>
     <tr><td>context/isolation.py</td><td>HistoryIsolation</td><td>把选定历史收在一个根节点下，此后默认不展开</td><td>isolate、visible_roots</td></tr>
     <tr><td>context/skills.py</td><td>SkillCandidate</td><td>技能候选的提交、复核与版本</td><td>propose、review、publish</td></tr>
   </tbody>
 </table>
-<p>新增的三个目录各只有一个职责，不互相依赖；messaging 依赖订阅表，context 依赖历史层，两者都只读工作模型，不写卡片状态。</p>
+<p>新增的三个目录各只有一个职责，不互相依赖；messaging 依赖卡片与实例上的订阅，context 依赖历史层，两者都只读工作模型，不写卡片状态。</p>
 
 <h2><span class="num">四</span>需要修改的现有文件</h2>
 <table>
@@ -113,7 +112,7 @@ misaka/
   <tbody>
     <tr><td>platform/work.py</td><td>模板表加父版本字段；实例表删除覆盖字段；增加订阅的增删查</td><td>版本树；实例不带覆盖；订阅归属卡片或实例</td></tr>
     <tr><td>platform/instances.py</td><td>三种创建输入；装配时不再合并覆盖</td><td>同上</td></tr>
-    <tr><td>platform/tasks.py</td><td>卡片加文件范围与禁止命令两列；建订阅表；卡片状态迁移保持原样</td><td>权限的另一半放在卡片上</td></tr>
+    <tr><td>platform/tasks.py</td><td>卡片加文件范围、禁止命令与订阅；建标签与隔离表；卡片状态迁移保持原样</td><td>权限的另一半放在卡片上</td></tr>
     <tr><td>network/dispatch.py</td><td>启动前建立订阅，结束时删除；按卡片范围装配执行</td><td>订阅随卡片生命周期</td></tr>
     <tr><td>network/worker.py</td><td>执行时读取范围与禁令</td><td>同上</td></tr>
     <tr><td>network/messages.py</td><td>发送改为中心发布；接收改为去重后注入</td><td>通信走中心</td></tr>
@@ -145,10 +144,10 @@ tasks(
   fs_scope, forbidden_commands
 )
 
-subscriptions(
-  id, card_id, instance_id, source, type, target, created_at,
-  check((card_id is null) != (instance_id is null))
-)
+tasks(..., fs_scope, forbidden_commands, subscriptions)
+instances(..., subscriptions)
+experience_tags(card_id, instance_id, label, created_at)
+history_isolations(instance_id, epoch, label, session_file, created_at)
 </pre>
 <p>约束照旧：实例必须对应存在的节点；一张卡片只绑一个实例；同一实例同时只有一张执行中的卡片；依赖同请求且无环。新增一条：不能删除仍有子节点或仍有实例依附的模板版本。</p>
 

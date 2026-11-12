@@ -1,10 +1,11 @@
 """Run cards headlessly and settle their board-owned submissions."""
 import hashlib
 import json
+import logging
 import os
-import sqlite3
 import secrets
 import socket
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from misaka.core.documents import workspace as ws_index
 from misaka.core.network import worker
 from misaka.core.platform import admission, budget
 from misaka.core.platform import tasks as db
+
+logger = logging.getLogger(__name__)
 
 
 def _event_summary(d, nbytes):
@@ -215,8 +218,8 @@ def _clear_subscriptions(card):
     names = [SubscriptionSync.name_for(card["id"], index) for index in range(len(specs))]
     try:
         SubscriptionSync(client, card["instance_id"]).clear(names)
-    except Exception:  # noqa: BLE001 - the run already ended; a stale subscription is not a failure
-        pass
+    except Exception:
+        logger.warning("Could not drop subscriptions for %s", card["id"], exc_info=True)
 
 
 def run_task(con, t, cfg, *, say=None):

@@ -216,7 +216,7 @@ def install(collector, runtime, connection, owner_id):
     async def skill_tool(tool_call_id, params, signal, on_update, ctx):
         from misaka.core.context.skills import SkillCandidate
 
-        owner = actor(connection())
+        actor(connection())
         candidate = SkillCandidate()
         if params.action == "list":
             return _data("skill-candidates", candidate.list())

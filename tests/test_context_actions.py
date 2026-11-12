@@ -1,5 +1,4 @@
 """Isolation starts a fresh window; a skill candidate loads nothing until approved."""
-from contextlib import closing
 
 from misaka.core.context.isolation import HistoryIsolation
 from misaka.core.context.skills import SkillCandidate
@@ -28,7 +27,6 @@ def test_isolation_archives_the_session_and_records_why(tmp_path):
 
 
 def test_a_candidate_is_invisible_until_it_is_approved(tmp_path, monkeypatch):
-    from misaka.core.context import skills as module
     from misaka.config import home
     monkeypatch.setattr(home, "path", lambda key: tmp_path / key)
 
@@ -57,6 +55,7 @@ def test_a_rejected_candidate_leaves_nothing(tmp_path, monkeypatch):
 
 def test_an_answer_to_a_parked_card_starts_it_again():
     import os
+
     from misaka.core.network import messages
     from misaka.core.platform import tasks
     from tests.work_fixture import BODY, Scenario

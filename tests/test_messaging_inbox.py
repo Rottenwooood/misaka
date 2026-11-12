@@ -1,5 +1,4 @@
 """A delivery is taken once, and only acknowledged after it has been stored."""
-import json
 import sqlite3
 
 import httpx

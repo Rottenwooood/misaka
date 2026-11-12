@@ -111,8 +111,6 @@ def send(
     sender=None,
     task_id=None,
     generation=None,
-    hold_seconds=None,
-    lease_token=None,
     to_task=None,
     to_session=None,
     sender_task=None,
@@ -122,16 +120,12 @@ def send(
     ``to_task`` (with ``generation``) or ``to_session`` is the one reader it is for, and a row
     with neither is for the role's contact session. ``task_id`` is the help-request protocol's
     field, a different thing."""
-    lease_expires = (
-        int(time.time()) + max(1, int(hold_seconds))
-        if hold_seconds is not None else None
-    )
     con.execute(
         "INSERT INTO messages (to_addr, sender, body, summary, task_id, generation, "
-        "created_at, lease_expires, lease_token, to_task, to_session, sender_task, sender_session) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "created_at, to_task, to_session, sender_task, sender_session) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (to_addr, sender, body, summary, task_id, generation, int(time.time()),
-         lease_expires, lease_token, to_task, to_session, sender_task, sender_session))
+         to_task, to_session, sender_task, sender_session))
     return int(con.execute("SELECT last_insert_rowid()").fetchone()[0])
 
 
@@ -479,7 +473,7 @@ def _target_instance(target):
     from misaka.core.platform import tasks as board_tasks
 
     if target.get("to_task"):
-        con = tasks.connect(_board_path())
+        con = board_tasks.connect(_board_path())
         try:
             row = board_tasks.get(con, target["to_task"])
         finally:

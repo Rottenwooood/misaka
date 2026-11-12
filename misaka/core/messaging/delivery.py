@@ -1,9 +1,9 @@
 """Turn a delivery into a row the addressed card will read.
 
 The centre knows endpoints and types, not cards. The sender puts the card ID in the content;
-this module reads it, resolves the card's live session and posts the message there. A
-delivery that names no card is dropped after it has been recorded: retrying it would only
-repeat the same mistake.
+this module reads it and posts to that card's session. Without a card ID the endpoint decides:
+the instance's live session is the recipient. A delivery that names neither is recorded and
+dropped, because a retry would only repeat the same mistake.
 """
 from __future__ import annotations
 

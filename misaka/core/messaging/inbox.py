@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Callable
 
 from misaka.core.network import messages
 
@@ -93,7 +93,7 @@ class CallbackServer:
         inbox, on_batch = self.inbox, self.on_batch
 
         class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):  # noqa: N802 - http.server's spelling
+            def do_POST(self):
                 if self.path.split("?")[0] != "/messages":
                     self.send_error(404)
                     return
@@ -109,7 +109,7 @@ class CallbackServer:
                     batch.update({item["id"]: item for item in fresh})
                     if batch:
                         inbox.mark_delivered(on_batch(list(batch.values())))
-                except Exception:
+                except Exception:  # noqa: BLE001 - any failure must reach the centre as a retry
                     # Acknowledging before the work is done would lose the batch.
                     self.send_error(500, "not taken over")
                     return

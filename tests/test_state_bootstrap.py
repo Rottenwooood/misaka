@@ -23,8 +23,9 @@ def test_bootstrap_creates_a_template_and_an_instance_once():
 
 def test_setup_leaves_one_coordinator_behind(tmp_path, monkeypatch):
     from contextlib import closing
-    from misaka.config import home
+
     from misaka.cli import setup as setup_cli
+    from misaka.config import home
     from misaka.core.platform import tasks
 
     monkeypatch.setattr(home, "path", lambda key: tmp_path / "board.db" if key == "db" else tmp_path / key)

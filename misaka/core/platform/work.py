@@ -88,7 +88,7 @@ def _subscription_specs(value):
     if value is None:
         return []
     if not isinstance(value, list):
-        raise ValueError("subscriptions must be a list")
+        raise ValueError("subscriptions must be a list")  # noqa: TRY004 - a plan field, judged with the rest of the plan
     specs = []
     for item in value:
         if not isinstance(item, dict) or set(item) - {"source", "type", "target"}:

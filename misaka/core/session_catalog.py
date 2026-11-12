@@ -9,9 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sqlite3
 import secrets
 import shutil
+import sqlite3
 import sys
 import tempfile
 import time

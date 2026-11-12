@@ -30,7 +30,7 @@ class FakeCentre:
                 if data:
                     self.wfile.write(data)
 
-            def do_POST(self):  # noqa: N802
+            def do_POST(self):
                 body = self._read()
                 centre.requests.append(("POST", self.path, body, self.headers.get("authorization")))
                 if body.get("type") == "refused":
@@ -38,14 +38,14 @@ class FakeCentre:
                 else:
                     self._reply(200, {"id": body.get("id"), "deduplicated": False, "recipients": []})
 
-            def do_PUT(self):  # noqa: N802
+            def do_PUT(self):
                 body = self._read()
                 centre.requests.append(("PUT", self.path, body, self.headers.get("authorization")))
                 if self.path == "/api/subscriptions":
                     centre.subscriptions.add(body["name"])
                 self._reply(200, {})
 
-            def do_DELETE(self):  # noqa: N802
+            def do_DELETE(self):
                 centre.requests.append(("DELETE", self.path, None, self.headers.get("authorization")))
                 name = self.path.rsplit("/", 1)[-1]
                 if name not in centre.subscriptions:
@@ -54,7 +54,7 @@ class FakeCentre:
                 centre.subscriptions.discard(name)
                 self._reply(204)
 
-            def do_GET(self):  # noqa: N802
+            def do_GET(self):
                 centre.requests.append(("GET", self.path, None, self.headers.get("authorization")))
                 self._reply(200, {"ok": True})
 

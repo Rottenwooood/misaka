@@ -1,5 +1,4 @@
 """A finished card's history is marked, once, with a label."""
-import sqlite3
 from contextlib import closing
 
 from tests.work_fixture import BODY, Scenario

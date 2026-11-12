@@ -55,7 +55,7 @@ class SisterCatalogTests(unittest.IsolatedAsyncioTestCase):
         part.session = SimpleNamespace(getActiveToolNames=list)
         with patch.object(capabilities, "routing_catalog", side_effect=AssertionError("unexpected reload")):
             text = (await part.before_agent_start({"systemPrompt": "BASE"}, None))["systemPrompt"]
-        from misaka.config.identity import RESEARCH_APPROVAL, COORDINATOR_ROLE
+        from misaka.config.identity import COORDINATOR_ROLE, RESEARCH_APPROVAL
         from misaka.core.research.planner import RESEARCH_SISTER_DISCIPLINE
         self.assertNotIn(COORDINATOR_ROLE, text)
         self.assertNotIn(RESEARCH_APPROVAL, text)

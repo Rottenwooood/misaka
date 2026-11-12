@@ -67,5 +67,3 @@ class CenterClient:
     def drop_subscription(self, name: str) -> None:
         self.request("DELETE", f"/api/subscriptions/{name}")
 
-    def status(self) -> dict:
-        return self.request("GET", "/api/status")

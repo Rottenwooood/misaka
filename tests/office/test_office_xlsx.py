@@ -82,8 +82,8 @@ def test_two_data_islands_are_separated_and_labelled(tmp_path):
 # ── rendered values ─────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize(("value", "fmt", "shown"), [
-    (datetime.datetime(2024, 3, 1), None, "2024-03-01"),  # noqa: DTZ001 - a cell has no zone
-    (datetime.datetime(2024, 3, 1, 14, 30, 5), None, "2024-03-01 14:30:05"),  # noqa: DTZ001
+    (datetime.datetime(2024, 3, 1), None, "2024-03-01"),
+    (datetime.datetime(2024, 3, 1, 14, 30, 5), None, "2024-03-01 14:30:05"),
     (0.153, "0.0%", "15.3%"),
     (1234567.0, "#,##0", "1,234,567"),
     (1234.5, '"$"#,##0.00', "$1,234.50"),

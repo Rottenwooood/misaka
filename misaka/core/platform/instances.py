@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import json
 import os
 import secrets
 import time

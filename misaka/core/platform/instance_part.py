@@ -5,7 +5,6 @@ import logging
 from misaka.core.platform import instances
 from misaka.utils.redact import redact
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -56,7 +55,7 @@ class InstancePart:
             specs = json.loads(item["subscriptions"] or "[]")
             if specs:
                 SubscriptionSync(client, item["id"]).apply(item["id"], specs, prefix="instance")
-        except Exception:  # noqa: BLE001 - local work continues without the centre
+        except Exception:
             logger.warning("Could not declare instance %s at the centre", item["id"], exc_info=True)
 
     async def before_agent_start(self, event, _ctx):

@@ -74,7 +74,7 @@ def test_a_date_type_parses_the_common_forms(tmp_path):
     path = _book(tmp_path)
     writer.write(str(path), "set_cell", {"sheet": "S", "cell": "A1",
                                          "value": "2024-03-01", "type": "date"})
-    assert _load(path)["S"]["A1"].value == datetime.datetime(2024, 3, 1)  # noqa: DTZ001
+    assert _load(path)["S"]["A1"].value == datetime.datetime(2024, 3, 1)
 
 
 def test_set_range_lays_out_a_grid_from_one_corner(tmp_path):

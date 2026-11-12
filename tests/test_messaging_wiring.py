@@ -1,11 +1,10 @@
 """Endpoint declaration, direct messages and instance subscriptions."""
 import json
-import sqlite3
 from contextlib import closing
 
 from misaka.core.messaging import delivery, registry
 from misaka.core.network import messages
-from tests.work_fixture import BODY, Scenario
+from tests.work_fixture import Scenario
 
 
 class StubClient:
@@ -87,5 +86,32 @@ def test_instance_subscriptions_are_stored_with_the_instance(tmp_path):
             row = con.execute("SELECT subscriptions FROM instances WHERE id='lo'").fetchone()
         assert json.loads(row[0]) == [{"source": "calendar", "type": "reminder",
                                        "target": None}]
+    finally:
+        s.close()
+
+
+def test_a_card_target_resolves_to_its_instance(monkeypatch):
+    from misaka.core.network import messages
+    from tests.work_fixture import BODY, Scenario
+
+    s = Scenario()
+    try:
+        s.apply([
+            {"op": "template.create", "id": "lo", "role": "last-order", "config": {}},
+            {"op": "instance.create", "id": "lo", "template_id": "lo", "template_revision": 1},
+            {"op": "template.create", "id": "sister", "role": "sister", "config": {}},
+            {"op": "instance.create", "id": "worker", "template_id": "sister", "template_revision": 1},
+            {"op": "request.create", "id": "req", "title": "R", "owner_id": "lo",
+             "workspace": str(s.project)},
+            {"op": "plan.update", "request_id": "req", "expected_revision": 0, "cards": [{
+                "id": "t_a00001", "title": "One", "instance_id": "worker", "body": BODY}]},
+        ])
+        original = messages._board_path
+        messages._board_path = lambda: s.database
+        try:
+            assert messages._target_instance({"to_task": "t_a00001"}) == "worker"
+            assert messages._target_instance({"to_task": "t_ffffff"}) is None
+        finally:
+            messages._board_path = original
     finally:
         s.close()

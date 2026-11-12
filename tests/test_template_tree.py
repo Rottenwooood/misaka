@@ -3,8 +3,6 @@ import json
 import sqlite3
 from contextlib import closing
 
-import pytest
-
 from tests.work_fixture import Scenario
 
 
