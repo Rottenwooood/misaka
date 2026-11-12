@@ -1,6 +1,6 @@
 """Instance-owned orchestration tools for ordinary work."""
 import json
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -76,21 +76,29 @@ class ShowRoster(Command):
     action: Literal["show"]
 
 
-CONFIG_FIELDS = "system, model, thinking, tools, skills, settings"
+class SessionConfig(Command):
+    """What a template node says about assembling a session; every field is optional."""
+    system: str | None = Field(None, description="Additional system prompt text.")
+    model: str | None = Field(None, description="provider/model.")
+    thinking: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
+    tools: list[str] | None = Field(None, description="Tool names; empty means the role default.")
+    skills: list[str] | None = Field(None, description="Skill names to load.")
+    settings: dict[str, dict] | None = Field(
+        None, description="Only mcpServers and web; model and thinking have their own fields.")
 
 
 class CreateTemplate(Command):
     action: Literal["create_template"]
     id: str
     role: Literal["last-order", "sister"]
-    config: dict[str, Any] = Field(description=f"Session configuration; keys: {CONFIG_FIELDS}.")
+    config: SessionConfig
 
 
 class ReviseTemplate(Command):
     action: Literal["revise_template"]
     id: str
     expected_revision: int = Field(ge=1)
-    config: dict[str, Any] = Field(description=f"The node's full configuration; keys: {CONFIG_FIELDS}.")
+    config: SessionConfig
 
 
 class CreateInstance(Command):
@@ -98,10 +106,10 @@ class CreateInstance(Command):
     id: str
     template_id: str
     template_revision: int | None = Field(None, ge=1)
-    config: dict[str, Any] | None = Field(
+    config: SessionConfig | None = Field(
         None,
-        description=f"With template_revision: changes merged over that node, which becomes a new node. "
-                    f"Without: the full configuration of a new template, and role is required. Keys: {CONFIG_FIELDS}.")
+        description="With template_revision: changes merged over that node, which becomes a new node. "
+                    "Without: the full configuration of a new template, and role is required.")
     role: Literal["last-order", "sister"] | None = Field(
         None, description="Only for a new template; a pinned node already has one.")
     label: str | None = None

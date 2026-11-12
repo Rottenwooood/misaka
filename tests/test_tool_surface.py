@@ -242,3 +242,16 @@ def test_the_last_order_stops_a_card_and_the_process_is_named():
             assert tasks.get(con, "t_a00001")["status"] == "stopped"
     finally:
         s.close()
+
+
+def test_the_template_config_names_every_field_it_accepts():
+    from misaka.core.network.wiring import coordination as tools
+
+    schema = tools._command_schema(tools.RosterParams)
+    arms = schema["properties"]["command"]["oneOf"]
+    create = next(a for a in arms if a["properties"]["action"]["const"] == "create_template")
+    config = create["properties"]["config"]
+    assert set(config["properties"]) == {"system", "model", "thinking", "tools", "skills", "settings"}
+    assert config["additionalProperties"] is False
+    assert "max" in config["properties"]["thinking"]["anyOf"][0]["enum"]
+    assert config["properties"]["tools"]["anyOf"][0]["items"]["type"] == "string"

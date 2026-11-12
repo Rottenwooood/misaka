@@ -160,7 +160,8 @@ history_isolations(instance_id, epoch, label, session_file, created_at)
 <strong>停止卡片。</strong>协调工具 stop → 面板终止该卡所在 pane → 落库为 stopped；没有 pane 托管时只落库。<br>
 <strong>恢复卡片。</strong>协调工具 resume → 清除挂起原因 → 依赖关系决定回到待做还是就绪。<br>
 <strong>向未启动的卡片发消息。</strong>发布前先声明目标实例的端点与直投订阅，再按编号投递；会话启动时读到。</p>
-<p>工具读写同一个形状：列表按列表返回，省略的字段保持原值；返回值可以原样写回。实例与模板只有在没有卡片或没有引用时才允许删除。</p>
+<p>工具读写同一个形状：列表按列表返回，省略的字段保持原值；返回值可以原样写回。模板配置在工具 schema 中是六个有名字段（system、model、thinking、tools、skills、settings），不是自由字典。</p>
+<p>实例与模板只有在没有卡片或没有引用时才允许删除。</p>
 
 <h2><span class="num">七</span>阶段与顺序</h2>
 <table>
