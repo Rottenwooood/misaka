@@ -48,6 +48,11 @@ class SavePlan(Command):
     cards: list[PlanCard] = Field(default_factory=list, description="New cards and patches to unstarted cards; omitted fields are unchanged.")
 
 
+class ResumeCards(Command):
+    action: Literal["resume"]
+    cards: list[CardId] = Field(min_length=1, description="Blocked cards to put back on the board.")
+
+
 class DispatchCard(Command):
     id: CardId
     generation: int | None = Field(None, ge=1, description="Omit to start the card as it is now; pass it to refuse a stale edit.")
@@ -59,25 +64,28 @@ class StartCards(Command):
 
 
 class TaskParams(Command):
-    command: Annotated[ShowTask | SavePlan | StartCards, Field(discriminator="action")]
+    command: Annotated[ShowTask | SavePlan | StartCards | ResumeCards, Field(discriminator="action")]
 
 
 class ShowRoster(Command):
     action: Literal["show"]
 
 
+CONFIG_FIELDS = "system, model, thinking, tools, skills, settings"
+
+
 class CreateTemplate(Command):
     action: Literal["create_template"]
     id: str
     role: Literal["last-order", "sister"]
-    config: dict[str, Any]
+    config: dict[str, Any] = Field(description=f"Session configuration; keys: {CONFIG_FIELDS}.")
 
 
 class ReviseTemplate(Command):
     action: Literal["revise_template"]
     id: str
     expected_revision: int = Field(ge=1)
-    config: dict[str, Any] = Field(description="The node's full session configuration.")
+    config: dict[str, Any] = Field(description=f"The node's full configuration; keys: {CONFIG_FIELDS}.")
 
 
 class CreateInstance(Command):
@@ -87,8 +95,8 @@ class CreateInstance(Command):
     template_revision: int | None = Field(None, ge=1)
     config: dict[str, Any] | None = Field(
         None,
-        description="With template_revision: changes merged over that node, which becomes a new node. "
-                    "Without: the full configuration of a new template, and role is required.")
+        description=f"With template_revision: changes merged over that node, which becomes a new node. "
+                    f"Without: the full configuration of a new template, and role is required. Keys: {CONFIG_FIELDS}.")
     role: Literal["last-order", "sister"] | None = Field(
         None, description="Only for a new template; a pinned node already has one.")
     label: str | None = None
@@ -100,9 +108,20 @@ class SetSubscriptions(Command):
     subscriptions: list[CardSubscription]
 
 
+class DeleteInstance(Command):
+    action: Literal["delete_instance"]
+    id: str
+
+
+class DeleteTemplate(Command):
+    action: Literal["delete_template"]
+    id: str
+    revision: int | None = Field(None, ge=1, description="One revision; omit to delete the template.")
+
+
 class RosterParams(Command):
-    command: Annotated[ShowRoster | CreateTemplate | ReviseTemplate | CreateInstance | SetSubscriptions,
-                       Field(discriminator="action")]
+    command: Annotated[ShowRoster | CreateTemplate | ReviseTemplate | CreateInstance | SetSubscriptions
+                       | DeleteInstance | DeleteTemplate, Field(discriminator="action")]
 
 
 def _command_schema(model):
@@ -183,6 +202,10 @@ def install(collector, runtime, connection, owner_id):
             owner = actor(con)
             if isinstance(command, ShowTask):
                 return _data("work-plan", work.owned_state(con, owner, command.request_id))
+            if isinstance(command, ResumeCards):
+                for card_id in command.cards:
+                    work.resume_card(con, card_id)
+                return _data("work-plan", work.owned_state(con, owner))
             if isinstance(command, SavePlan):
                 values = command.model_dump(exclude_unset=True, exclude={"action"})
                 values["cards"] = [
@@ -264,6 +287,12 @@ def install(collector, runtime, connection, owner_id):
         with tasks.write_txn(con):
             actor(con)
             if isinstance(command, ShowRoster):
+                return _data("roster", _roster_view(work.roster(con)))
+            if isinstance(command, DeleteInstance):
+                work.delete_instance(con, command.id)
+                return _data("roster", _roster_view(work.roster(con)))
+            if isinstance(command, DeleteTemplate):
+                work.delete_template(con, command.id, command.revision)
                 return _data("roster", _roster_view(work.roster(con)))
             if isinstance(command, SetSubscriptions):
                 item = work.set_instance_subscriptions(

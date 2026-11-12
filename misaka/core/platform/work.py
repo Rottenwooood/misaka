@@ -72,6 +72,16 @@ def _text(value, field):
     return value.strip()
 
 
+def _stored_list(value, field):
+    """A field read back from the board is JSON text; a change supplied by a caller is a list."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError as error:
+            raise ValueError(f"{field} is not stored as a list") from error
+    return _string_list(value, field)
+
+
 def _string_list(value, field):
     """A list of unique nonempty strings, or nothing."""
     if value is None:
@@ -302,7 +312,8 @@ def update_plan(con, request_id, expected_revision, changes):
             executor = instance(con, values.get("instance_id"))
             if executor["role"] != "sister" or executor["retired"]:
                 raise ValueError("Cards require a non-retired Sister instance")
-            if row is not None and row["status"] not in ("ready", "todo", "held"):
+            cancelling = change.get("cancel") is True
+            if row is not None and row["status"] not in ("ready", "todo", "held", "blocked") and not cancelling:
                 raise ValueError(
                     f"Card {tid} is {row['status']}; stop/review it through its lifecycle or create a follow-up"
                 )
@@ -315,8 +326,8 @@ def update_plan(con, request_id, expected_revision, changes):
                 raise ValueError("The reviewer must be different from the assignee")
             if "cancel" in change and type(change["cancel"]) is not bool:
                 raise ValueError("cancel must be boolean")
-            fs_scope = _string_list(values.get("fs_scope"), "fs_scope")
-            forbidden = _string_list(values.get("forbidden_commands"), "forbidden_commands")
+            fs_scope = _stored_list(values.get("fs_scope"), "fs_scope")
+            forbidden = _stored_list(values.get("forbidden_commands"), "forbidden_commands")
             specs = (_subscription_specs(change.get("subscriptions"))
                      if "subscriptions" in change else None)
             if row is None:
@@ -513,15 +524,18 @@ def apply(con, operations):
                         )
                     if config is not None:
                         merged = {**json.loads(parent["config_json"]), **config}
-                        revision = con.execute(
-                            "SELECT MAX(revision) FROM templates WHERE id=?", (tid,)
-                        ).fetchone()[0] + 1
-                        con.execute(
-                            "INSERT INTO templates(id,revision,parent_revision,role,config_json,created_at) "
-                            "VALUES(?,?,?,?,?,?)",
-                            (tid, revision, parent["revision"], parent["role"],
-                             _json(merged), now),
-                        )
+                        if merged == json.loads(parent["config_json"]):
+                            config = None  # a patch that changes nothing pins the parent
+                        else:
+                            revision = con.execute(
+                                "SELECT MAX(revision) FROM templates WHERE id=?", (tid,)
+                            ).fetchone()[0] + 1
+                            con.execute(
+                                "INSERT INTO templates(id,revision,parent_revision,role,config_json,created_at) "
+                                "VALUES(?,?,?,?,?,?)",
+                                (tid, revision, parent["revision"], parent["role"],
+                                 _json(merged), now),
+                            )
                 con.execute(
                     "INSERT INTO instances(id,template_id,template_revision,label,created_at) "
                     "VALUES(?,?,?,?,?)",
@@ -684,6 +698,48 @@ def save_plan(con, owner, request_id, *, expected_revision=None, workspace=None,
                  expected_revision + 1, request_id),
             )
         return request(con, request_id)
+
+
+def delete_instance(con, instance_id):
+    """Remove an instance that owns no cards; its session logs stay on disk."""
+    instance(con, instance_id)
+    if con.execute("SELECT 1 FROM tasks WHERE instance_id=? LIMIT 1", (instance_id,)).fetchone():
+        raise ValueError(f"Instance {instance_id} has cards; reassign or remove them first")
+    con.execute("DELETE FROM instance_session_archive WHERE instance_id=?", (instance_id,))
+    con.execute("DELETE FROM instances WHERE id=?", (instance_id,))
+    con.commit()
+
+
+def delete_template(con, template_id, revision=None):
+    """Remove one revision, or the whole template when every revision is free."""
+    row = con.execute("SELECT 1 FROM templates WHERE id=? AND (? IS NULL OR revision=?)",
+                      (template_id, revision, revision)).fetchone()
+    if row is None:
+        raise ValueError(f"Template not found: {template_id}")
+    if con.execute("SELECT 1 FROM instances WHERE template_id=? AND (? IS NULL OR template_revision=?)",
+                   (template_id, revision, revision)).fetchone():
+        raise ValueError(f"Template {template_id} is pinned by an instance")
+    if con.execute("SELECT 1 FROM templates WHERE parent_revision IS NOT NULL AND id=? AND (? IS NULL OR parent_revision=?)",
+                   (template_id, revision, revision)).fetchone():
+        raise ValueError(f"Template {template_id} has a newer revision derived from it")
+    if revision is None:
+        con.execute("DELETE FROM templates WHERE id=?", (template_id,))
+    else:
+        con.execute("DELETE FROM templates WHERE id=? AND revision=?", (template_id, revision))
+    con.commit()
+
+
+def resume_card(con, card_id):
+    """Return a blocked card to the board; its parent graph decides whether it waits."""
+    from misaka.core.platform import tasks
+
+    row = tasks.get(con, card_id)
+    if row is None:
+        raise ValueError(f"Card not found: {card_id}")
+    if row["status"] != "blocked":
+        raise ValueError(f"Card {card_id} is {row['status']}; only a blocked card resumes")
+    if not tasks.unblock_task(con, card_id):
+        raise ValueError(f"Card {card_id} could not be resumed")
 
 
 def card_generation(con, card_id):

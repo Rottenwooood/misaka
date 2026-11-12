@@ -1806,8 +1806,8 @@ class Daemon:
 
     async def _run_card(self, task_id, place, *, admission, db, owner_id, expected_generation) -> Pane:
         con = self._board()
-        from misaka.core.platform import work
         from misaka.core.network import worker
+        from misaka.core.platform import work
         if worker.over_cap(_expand(CFG["db"]), task_id, CFG["token_cap"]):
             # The research run's cap is spent: the card is not started and stays ready.
             raise ValueError(f"Card {task_id} was not started: {worker.budget_cap_reason()}.")

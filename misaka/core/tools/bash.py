@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import re
 import subprocess
 import time
 from collections.abc import Callable, Mapping
@@ -56,6 +57,7 @@ _SESSION_ENV_KEYS = (
     "PI_REASONING_LEVEL",
 )
 _SESSION_ENV_GUIDELINE = "You can inspect PI_* environment variables for current model and session details."
+_SECRET_ENV = re.compile(r"(^|_)(API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)$", re.IGNORECASE)
 
 
 def _resolve_timeout_seconds(timeout: float | None) -> float | None:
@@ -351,6 +353,10 @@ def _resolve_spawn_context(
 ) -> BashSpawnContext:
     env = {**get_shell_env()}
     for key in _SESSION_ENV_KEYS:
+        env.pop(key, None)
+    # A shell is not a place to read credentials: the model must not learn a key by running
+    # `env`. Anything that is plainly a secret leaves the child environment.
+    for key in [key for key in env if _SECRET_ENV.search(key)]:
         env.pop(key, None)
     if expose_session_environment and ctx is not None:
         session_manager = read_field(ctx, "sessionManager")

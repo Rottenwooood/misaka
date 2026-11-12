@@ -499,6 +499,27 @@ def _target_instance(target):
         con.close()
 
 
+_ROUTED = set()
+
+
+def _route(client, instance_id):
+    """Declare an instance at the centre before addressing it, so a card whose session has
+    not started yet is still an address rather than an unrouteable id."""
+    from misaka.core.messaging import config, registry
+
+    url = config.inbox_url()
+    if not url:
+        return
+    key = (str(getattr(client, "base_url", "")), instance_id, url)
+    if key in _ROUTED:
+        return
+    try:
+        registry.ensure_endpoint(client, instance_id, url)
+    except Exception:  # noqa: BLE001 - a centre error surfaces on send
+        return
+    _ROUTED.add(key)
+
+
 def _publish(target, body, *, summary, sender, sender_task=None, sender_session=None):
     """Send through the centre; a message never takes a local shortcut."""
     from misaka.core.messaging import config
@@ -510,6 +531,7 @@ def _publish(target, body, *, summary, sender, sender_task=None, sender_session=
     instance_id = _target_instance(target)
     if not instance_id:
         raise RuntimeError("This address has no instance to deliver to at the centre")
+    _route(client, instance_id)
     payload = {"text": body, "summary": summary, "from": sender}
     if sender_task:
         payload["from_card"] = sender_task

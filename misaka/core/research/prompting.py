@@ -1,8 +1,8 @@
 """Small Research-only additions to the existing system-prompt assembly."""
 from misaka.config.identity import (
-    RESEARCH_APPROVAL,
     COORDINATOR_BOARD_STATUS,
     COORDINATOR_RECEIPTS,
+    RESEARCH_APPROVAL,
 )
 from misaka.core.system_prompt import CURRENT_TOOLS_GUIDELINE
 
