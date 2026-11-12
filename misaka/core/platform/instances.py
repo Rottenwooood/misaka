@@ -28,7 +28,7 @@ CONFIG_KEYS = frozenset({"system", "model", "thinking", "tools", "skills", "sett
 # provides, so a person who wants a Last Order that reads files can say so on the node.
 # A Sister's entry is None: every tool its role provides.
 DEFAULT_TOOLS = {
-    "last-order": ("misaka_task", "misaka_roster", "SendMessage"),
+    "last-order": ("misaka_task", "misaka_roster", "SendMessage", "misaka_sister_peek"),
 }
 
 

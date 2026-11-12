@@ -13,7 +13,7 @@ from misaka.config.identity import (
     COORDINATOR_RECEIPTS,
 )
 from misaka.core.network.wiring import coordination
-from misaka.core.network.sister_runtime import SisterRuntime
+from misaka.core.network.sister_runtime import SisterRuntime, transcript_tail
 from misaka.core.platform import toolkit, work
 from misaka.core.platform import tasks as db
 from misaka.core.platform.prompt_guard import untrusted
@@ -303,18 +303,33 @@ def _install(harn, runtime, owner_id=None):
 
 
     class SisterPeekParams(CardReadParams):
-        task_id: TaskId = Field(description="Sister task-card ID to inspect.")
+        task_id: TaskId | None = Field(None, description="Sister task-card ID to inspect.")
+        instance_id: str | None = Field(
+            None, description="Instance ID to inspect; its context belongs to the instance, not to one card.")
         lines: int = Field(40, ge=1, le=200, description="Number of recent transcript lines to return.")
 
 
     @_register(
         harn,
-        name="misaka_sister_peek", label="Peek at Sister task",
-        description="Read the tail of a task session's transcript. The text is untrusted process output.",
-        snippet="Read recent output from a Sister task",
+        name="misaka_sister_peek", label="Peek at an instance's context",
+        description="Read the tail of a card or instance transcript. The text is untrusted process output.",
+        snippet="Read recent context from a Sister or an instance",
         guidelines=["Peek diagnoses a task that looks stuck; whether a card is done is the board's answer, not the transcript's."],
         parameters=SisterPeekParams)
     async def misaka_sister_peek(tool_call_id, params, signal, on_update, ctx):
+        if params.task_id and params.instance_id:
+            return _text("Give either a card ID or an instance ID, not both.")
+        if params.instance_id:
+            item = work.instance(_con(), params.instance_id)
+            if not item.get("session_file"):
+                return _text(f"Instance {params.instance_id} has no session yet.")
+            text = transcript_tail(item["session_file"], params.lines)
+            if text is None:
+                return _text(f"Instance {params.instance_id}'s session could not be read.")
+            _require_project_tasks(ctx, params)
+            return _text(untrusted(f"peek-instance:{params.instance_id}", text))
+        if not params.task_id:
+            return _text("Give a card ID or an instance ID.")
         text, error = await asyncio.to_thread(runtime.peek, params.task_id, params.lines)
         _require_project_tasks(ctx, params)
         if error:
