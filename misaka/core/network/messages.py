@@ -491,17 +491,22 @@ def _target_instance(target):
     return None
 
 
-def _publish(target, body, *, summary, sender):
-    """Send through the centre when one is configured; returns the message id or None."""
+def _publish(target, body, *, summary, sender, sender_task=None, sender_session=None):
+    """Send through the centre; a message never takes a local shortcut."""
     from misaka.core.messaging import config
 
     client = config.center()
     if client is None:
-        return None
+        raise RuntimeError(
+            "No message centre is configured; set MISAKA_CENTER_URL and MISAKA_CENTER_TOKEN")
     instance_id = _target_instance(target)
     if not instance_id:
-        return None
+        raise RuntimeError("This address has no instance to deliver to at the centre")
     payload = {"text": body, "summary": summary, "from": sender}
+    if sender_task:
+        payload["from_card"] = sender_task
+    if sender_session:
+        payload["from_session"] = sender_session
     if target.get("to_task"):
         payload["card"] = target["to_task"]
     result = client.send("direct", payload, to=[instance_id])
@@ -565,10 +570,8 @@ def send_as(sender, addr, message, summary, *, request_input=False, card_task=No
         mid = request_help(target, body, message, summary, sender=sender, card_task=card_task,
                            sender_session=sender_session)
     else:
-        mid = _publish(target, body, summary=summary, sender=sender)
-        if mid is None:
-            mid = post(target, body, summary=summary, sender=sender, sender_task=card_task,
-                       sender_session=sender_session)
+        mid = _publish(target, body, summary=summary, sender=sender,
+                       sender_task=card_task, sender_session=sender_session)
     contact = not (target["to_task"] or target["to_session"])
     if contact:
         where = "it is being woken to read it"
