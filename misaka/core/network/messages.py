@@ -513,6 +513,19 @@ def _publish(target, body, *, summary, sender, sender_task=None, sender_session=
     return result.get("id") or "queued"
 
 
+def _resume_waiting_card(task_id):
+    """A card parked for an answer starts again once one arrives."""
+    from misaka.core.platform import tasks as board_tasks
+
+    con = board_tasks.connect(_board_path())
+    try:
+        row = board_tasks.get(con, task_id)
+        if row is not None and row["status"] == "blocked" and row["block_kind"] == "needs_input":
+            board_tasks.unblock_task(con, task_id)
+    finally:
+        con.close()
+
+
 def post(target, body, *, summary, sender, sender_task=None, sender_session=None):
     """Queue one message for a resolved ``target``; one for a contact session wakes it.
     Returns the message id. Blocking sqlite and a process start: keep it off an event loop."""
@@ -524,6 +537,8 @@ def post(target, body, *, summary, sender, sender_task=None, sender_session=None
                    sender_session=sender_session)
     finally:
         con.close()
+    if target.get("to_task"):
+        _resume_waiting_card(target["to_task"])
     if not (target["to_task"] or target["to_session"]):
         wake_contact(target["to_addr"], mid, sender=sender)
     return mid
