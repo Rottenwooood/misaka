@@ -60,8 +60,14 @@ CREATE TABLE IF NOT EXISTS messages (
 COLUMNS = frozenset(line.split()[0] for line in SCHEMA.splitlines()
                     if line.startswith(" ") and not line.lstrip().startswith("--"))
 # Bumped with a migration whenever SCHEMA changes shape; stamped the way the board stamps its own.
-MESSAGES_SCHEMA_VERSION = 1
+MESSAGES_SCHEMA_VERSION = 2
 VERSION_TABLE = """
+CREATE TABLE IF NOT EXISTS inbox_messages (
+ id TEXT PRIMARY KEY,
+ endpoint TEXT NOT NULL,
+ source TEXT NOT NULL,
+ received_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS schema_migrations (
  component TEXT NOT NULL,
  version INTEGER NOT NULL,
