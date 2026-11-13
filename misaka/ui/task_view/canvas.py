@@ -144,6 +144,33 @@ def _wrap(text, limit):
     return rows or [""]
 
 
+def _edge_glyph(bits):
+    up, down, left, right = 1, 2, 4, 8
+    if bits == up | down:
+        return "│"
+    if bits == left | right:
+        return "─"
+    if bits == up | right:
+        return "└"
+    if bits == up | left:
+        return "┘"
+    if bits == down | right:
+        return "┌"
+    if bits == down | left:
+        return "┐"
+    if bits == up | down | right:
+        return "├"
+    if bits == up | down | left:
+        return "┤"
+    if bits == left | right | down:
+        return "┬"
+    if bits == left | right | up:
+        return "┴"
+    if bits == up | down | left | right:
+        return "┼"
+    return "│" if bits & (up | down) else "─"
+
+
 class Canvas:
     def __init__(self, snapshot, request_id=None, select_card=None):
         self.x = self.y = 0
@@ -216,8 +243,9 @@ class Canvas:
                         node = dict(
                             by_id[tid],
                             key=(project["path"], tid),
+                            rank=rank,
                             x=2 + column * 34,
-                            y=base_y + 2 + rank * 8,
+                            y=base_y + 2 + rank * 7,
                         )
                         parents = [by_id.get(p) for p in node["needs"]]
                         node["waiting"] = bool(node["needs"]) and any(
@@ -235,7 +263,7 @@ class Canvas:
                 self.world_cols = max(
                     self.world_cols, max(map(len, columns.values()), default=1) * 34 + 4
                 )
-                base_y += max(ranks.values(), default=0) * 8 + 9
+                base_y += max(ranks.values(), default=0) * 7 + 8
             base_y += 2
         self.world_rows = max(1, base_y)
         if self.select_card is not None:
@@ -255,7 +283,7 @@ class Canvas:
             (
                 n
                 for n in self.nodes
-                if n["x"] <= x < n["x"] + 38 and n["y"] <= y < n["y"] + 5
+                if n["x"] <= x < n["x"] + 30 and n["y"] <= y < n["y"] + 4
             ),
             None,
         )
@@ -419,23 +447,44 @@ class Canvas:
         self.offset_y = max(0, (graph_h - (self.world_rows - 2)) // 2)
         world = Screen(graph_w, graph_h)
         world.origin_x, world.origin_y = self.x, self.y
+        up, down, left, right = 1, 2, 4, 8
+        links, arrows = {}, []
+        by_rank = {}
         for source, target in self.edges:
-            x1, y1 = source["x"] + 15 + self.offset_x, source["y"] + 5 + self.offset_y
-            x2, y2 = target["x"] + 15 + self.offset_x, target["y"] + self.offset_y
-            mid = (y1 + y2) // 2
-            for y in range(max(y1, self.y), min(mid + 1, self.y + world.rows)):
-                world.text(x1, y, "│", "dim")
-            if x1 == x2:
-                world.text(x2, mid, "│", "dim")
-            else:
-                for x in range(max(min(x1, x2), self.x), min(max(x1, x2) + 1, self.x + graph_w)):
-                    world.text(x, mid, "─", "dim")
-            for y in range(max(mid + 1, self.y), min(y2, self.y + world.rows)):
-                world.text(x2, y, "│", "dim")
-            if x1 != x2:
-                world.text(x1, mid, "└" if x2 > x1 else "┘", "dim")
-                world.text(x2, mid, "┐" if x2 > x1 else "┌", "dim")
-            world.text(x2, y2 - 1, "▼", "dim")
+            by_rank.setdefault((source.get("rank", 0), target.get("rank", 0)), []).append(
+                (source, target))
+
+        def connect(x, y, bits):
+            links[(x, y)] = links.get((x, y), 0) | bits
+
+        for edges in by_rank.values():
+            bounds = []
+            for source, target in edges:
+                x1 = source["x"] + 15 + self.offset_x
+                y1 = source["y"] + 4 + self.offset_y
+                x2 = target["x"] + 15 + self.offset_x
+                y2 = target["y"] + self.offset_y
+                bounds.append((x1, y1, x2, y2))
+            mid = min(y2 for _x1, _y1, _x2, y2 in bounds) - 2
+            mid = max(mid, max(y1 for _x1, y1, _x2, _y2 in bounds) + 1)
+            for x1, y1, x2, y2 in bounds:
+                for y in range(y1, mid):
+                    connect(x1, y, up | down)
+                connect(x1, mid, up)
+                connect(x2, mid, down)
+                for y in range(mid + 1, y2 - 1):
+                    connect(x2, y, up | down)
+                arrows.append((x2, y2 - 1))
+            if len({x1 for x1, _y1, _x2, _y2 in bounds} | {x2 for _x1, _y1, x2, _y2 in bounds}) > 1:
+                lo = min(min(x1, x2) for x1, _y1, x2, _y2 in bounds)
+                hi = max(max(x1, x2) for x1, _y1, x2, _y2 in bounds)
+                for x in range(lo, hi + 1):
+                    bits = (left if x > lo else 0) | (right if x < hi else 0)
+                    connect(x, mid, bits)
+        for (x, y), bits in links.items():
+            world.text(x, y, _edge_glyph(bits), "dim")
+        for x, y in arrows:
+            world.text(x, y, "▼", "dim")
         for x, y, text_value, color in self.headings:
             world.text(x, y, clipped(text_value, graph_w - x), color)
         for node in self.nodes:
@@ -451,12 +500,11 @@ class Canvas:
                 else "wait" if node["status"] in ("ready", "todo")
                 else "dim"
             )
-            world.box(x, y, 30, 5, color)
-            for fill_y in range(y + 1, y + 4):
+            world.box(x, y, 30, 4, color)
+            for fill_y in range(y + 1, y + 3):
                 world.text(x + 1, fill_y, " " * 28)
             world.text(x + 1, y + 1, clipped(node["id"] + "  " + label, 28), color)
             world.text(x + 1, y + 2, clipped(node["title"], 28))
-            world.text(x + 1, y + 3, clipped(node["instance_id"], 28), "dim")
         for row in range(world.rows):
             s.cells[row + 3][:graph_w] = world.cells[row][:graph_w]
         node = self.selection()

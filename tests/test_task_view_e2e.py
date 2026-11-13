@@ -182,7 +182,7 @@ def main(report_path=None, *, interactive=False):
         view = Terminal([sys.executable, "-m", "misaka", "view", "tasks", *multi], s)
         try:
             text = view.frame("真实任务请求与实例", "实现中文导出")
-            assert "req-export" in text and "i-2" in text and "● 执行中" in text
+            assert "req-export" in text and "● 执行中" in text
             view.key("right")
             view.frame("方向键平移", "视口 x=6 y=0")
             view.mouse("press", 100, 8)
