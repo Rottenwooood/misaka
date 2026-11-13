@@ -20,7 +20,7 @@ def run(args):
         from misaka.ui.panel import client
         from misaka.ui.task_view import command
 
-        argv, env = command(projects)
+        argv, env = command(projects, request_id=args.request, select=args.select)
         try:
             client.check_protocol(client.request("ping",timeout=2))
             result = client.request(
@@ -32,7 +32,7 @@ def run(args):
             return 1
         print(json.dumps(result, ensure_ascii=False))
         return 0
-    reader = SnapshotReader(projects, home.path("db"))
+    reader = SnapshotReader(projects, home.path("db"), request_id=args.request)
     if args.json:
         snapshot = reader.read()
         print(json.dumps(snapshot, ensure_ascii=False, indent=2))
@@ -49,6 +49,6 @@ def run(args):
     from misaka.ui.task_view.canvas import run as run_canvas
 
     if args.snapshot:
-        print(Canvas(reader.read()).render(*args.snapshot).plain())
+        print(Canvas(reader.read(), select_card=args.select).render(*args.snapshot).plain())
         return 0
-    return run_canvas(reader)
+    return run_canvas(reader, select_card=args.select)

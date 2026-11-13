@@ -1177,3 +1177,20 @@ def test_sanitizes_and_bounds_rendered_titles():
 def test_window_title_strips_terminators_and_defaults_to_the_product():
     assert panel_mod.window_title_bytes("host: proj") == b"\x1b]0;host: proj\x07"
     assert panel_mod.window_title_bytes(None) == b"\x1b]0;misaka\x07"
+
+
+def test_the_sidebar_lists_cards_under_their_request():
+    spaces = [{"key": "w1", "label": "p-test", "folder": "/p-test", "active": True,
+               "state": "idle", "seen": True, "alive": True}]
+    tasks = [
+        {"kind": "group", "request_id": "req", "label": "perm-test  1/2"},
+        {"kind": "card", "request_id": "req", "id": "t_a10001", "title": "只读权限探针",
+         "status_label": "完成", "state": "idle", "seen": True},
+        {"kind": "card", "request_id": "req", "id": "t_a10002", "title": "语料目录读写探针",
+         "status_label": "待处理", "state": "idle", "seen": False},
+    ]
+    _lines, hits, sections = panel_mod.format_sidebar(spaces, tasks, 40, 30)
+    actions = [action for _rect, action in hits]
+    assert ("task-group", "req") in actions
+    assert ("task", "req", "t_a10001") in actions
+    assert "tasks" in sections

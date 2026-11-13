@@ -68,6 +68,8 @@ def _parser(extension_commands=None):
     view.add_argument("view_kind", choices=["tasks"])
     view.add_argument("--project", action="append", metavar="DIR",
                       help="Project to display; repeat for multiple projects (default: cwd)")
+    view.add_argument("--request", metavar="ID", help="Show one work request")
+    view.add_argument("--select", metavar="CARD", help="Select one card in that request")
     mode = view.add_mutually_exclusive_group()
     mode.add_argument("--json", action="store_true", help="Print one diagnostic snapshot as JSON")
     mode.add_argument("--snapshot", nargs=2, type=int, metavar=("COLS", "ROWS"),

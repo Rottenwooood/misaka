@@ -11,9 +11,10 @@ from misaka.core.platform import tasks, work
 
 
 class SnapshotReader:
-    def __init__(self, projects, database):
+    def __init__(self, projects, database, request_id=None):
         self.projects = sorted({str(Path(p).expanduser().resolve()) for p in projects})
         self.database = Path(database).expanduser().resolve()
+        self.request_id = request_id
         self.previous = None
 
     def read(self):
@@ -60,6 +61,8 @@ class SnapshotReader:
                         (project["path"],),
                     ).fetchall()
                     for request in requests:
+                        if self.request_id is not None and request["id"] != self.request_id:
+                            continue
                         group = dict(request)
                         rows = con.execute(
                             "SELECT * FROM card_state WHERE request_id=? ORDER BY created_at,id",
@@ -80,12 +83,18 @@ class SnapshotReader:
                                     "request_id": row["request_id"],
                                     "instance_id": row["instance_id"],
                                     "title": row["title"],
+                                    "body": row["body"],
                                     "status": row["status"],
                                     "running": row["status"] == "running",
                                     "needs": parents,
                                     "stale": False,
                                     "errors": [],
                                     "block_reason": row["block_reason"],
+                                    "blocked_at": row["blocked_at"],
+                                    "created_at": row["created_at"],
+                                    "completed_at": row["completed_at"],
+                                    "generation": row["generation"],
+                                    "review_feedback": row["review_feedback"],
                                     "session_file": row["session_file"],
                                     "fs_scope": row["fs_scope"],
                                     "forbidden_commands": row["forbidden_commands"],

@@ -17,6 +17,8 @@ COLORS = {
     "accent": "38;5;204",
     "active": "38;5;151",
     "wait": "38;5;222",
+    "good": "38;5;151",
+    "bad": "38;5;203",
 }
 
 
@@ -101,8 +103,8 @@ class Screen:
 
 
 STATE = {
-    "ready": "待调度",
-    "todo": "待处理",
+    "ready": "待处理",
+    "todo": "等依赖",
     "review": "待验收",
     "done": "完成",
     "failed": "失败",
@@ -115,10 +117,40 @@ STATE = {
 }
 
 
+def _split_body(body):
+    text = str(body or "")
+    marker = "## acceptance criteria"
+    index = text.lower().find(marker)
+    if index < 0:
+        return text.strip(), ""
+    return text[:index].strip(), text[index + len(marker):].strip()
+
+
+def _wrap(text, limit):
+    rows, current, used = [], "", 0
+    for ch in clean(text).replace("\r", ""):
+        if ch == "\n":
+            rows.append(current.rstrip())
+            current, used = "", 0
+            continue
+        size = width(ch)
+        if used + size > limit and current:
+            rows.append(current.rstrip())
+            current, used = "", 0
+        current += ch
+        used += size
+    if current.strip():
+        rows.append(current.rstrip())
+    return rows or [""]
+
+
 class Canvas:
-    def __init__(self, snapshot):
+    def __init__(self, snapshot, request_id=None, select_card=None):
         self.x = self.y = 0
-        self.selected = None
+        self.selected = select_card
+        self.select_card = select_card
+        self.request_id = request_id
+        self.show_inspector = True
         self.drag = None
         self.revision = 0
         self.snapshot = None
@@ -151,6 +183,8 @@ class Canvas:
                 )
                 base_y += 3
             for index, group in enumerate(project["requests"]):
+                if self.request_id is not None and group["id"] != self.request_id:
+                    continue
                 ranks = group["ranks"]
                 columns = {}
                 for tid in group["nodes"]:
@@ -180,8 +214,8 @@ class Canvas:
                         node = dict(
                             by_id[tid],
                             key=(project["path"], tid),
-                            x=2 + column * 42,
-                            y=base_y + 2 + rank * 8,
+                            x=2 + column * 34,
+                            y=base_y + 2 + rank * 6,
                         )
                         parents = [by_id.get(p) for p in node["needs"]]
                         node["waiting"] = bool(node["needs"]) and any(
@@ -197,11 +231,16 @@ class Canvas:
                         if parent in positions:
                             self.edges.append((positions[parent], positions[tid]))
                 self.world_cols = max(
-                    self.world_cols, max(map(len, columns.values()), default=1) * 42 + 4
+                    self.world_cols, max(map(len, columns.values()), default=1) * 34 + 4
                 )
-                base_y += max(ranks.values(), default=0) * 8 + 9
+                base_y += max(ranks.values(), default=0) * 6 + 7
             base_y += 2
         self.world_rows = max(1, base_y)
+        if self.select_card is not None:
+            chosen = next((n for n in self.nodes if n["id"] == self.select_card), None)
+            if chosen is not None:
+                self.selected = chosen["key"]
+            self.select_card = None
         if not any(n["key"] == self.selected for n in self.nodes):
             self.selected = self.nodes[0]["key"] if self.nodes else None
         return True
@@ -261,8 +300,10 @@ class Canvas:
         }
         if key in directions:
             self.pan(*directions[key])
-        elif key == "g":
+        elif key == "g" or key == "f":
             self.x = self.y = 0
+        elif key == "i":
+            self.show_inspector = not self.show_inspector
         elif self.nodes:
             current = next(
                 (i for i, n in enumerate(self.nodes) if n["key"] == self.selected), 0
@@ -326,76 +367,97 @@ class Canvas:
 
     def render(self, cols, rows):
         s = Screen(cols, rows)
-        s.text(0, 0, "MISAKA / 任务画布 / 只读 / 任务请求与卡片依赖", "accent")
-        s.text(
-            0,
-            1,
-            "方向键/hjkl 平移 · 拖空白平移 · Tab 选卡 · n/p 换组 · a 执行中 · g 起点 · q 退出",
-            "dim",
-        )
-        warning = self.snapshot["state_error"]
-        diagnostics = sum(
-            len(p["errors"])
-            + sum(bool(n["errors"]) for n in p["nodes"])
-            + sum(bool(g["errors"]) for g in p["requests"])
-            for p in self.snapshot["projects"]
-        )
-        s.text(
-            0,
-            2,
-            f"视口 x={self.x} y={self.y} · {cols}x{rows} · v{self.revision} · 异常 {diagnostics}"
-            + (" · " + warning if warning else ""),
-            "wait" if warning or diagnostics else "dim",
-        )
-        if cols < 42 or rows < 13:
-            s.text(0, 4, "窗口过小，请扩大后查看画布。", "wait")
+        groups = self.snapshot["projects"]
+        selected = self.selection()
+        request = None
+        for project in groups:
+            for group in project["requests"]:
+                if selected and selected.get("request_id") == group["id"]:
+                    request = group
+                    break
+            if request:
+                break
+        title = request["title"] if request else "全部请求"
+        request_id = request["id"] if request else ""
+        s.text(0, 0, "MISAKA / 任务视图 / " + clean(title)
+               + (f"  ·  {request_id}" if request_id else ""), "accent")
+        if request:
+            nodes = request["nodes"]
+            counts = {name: 0 for name in ("running", "done", "ready", "blocked", "failed")}
+            for tid in nodes:
+                status = next((n["status"] for n in self.nodes if n["id"] == tid), "")
+                if status == "running":
+                    counts["running"] += 1
+                elif status in ("done", "archived"):
+                    counts["done"] += 1
+                elif status in ("blocked", "triage"):
+                    counts["blocked"] += 1
+                elif status == "failed":
+                    counts["failed"] += 1
+                else:
+                    counts["ready"] += 1
+            s.text(0, 1, f"{len(nodes)} 卡 · {counts['done']} 完成 · {counts['running']} 执行中 · "
+                         f"{counts['ready']} 待处理 · {counts['blocked']} 受阻 · LO {request['owner_id']} · v{request['revision']}", "dim")
+        else:
+            s.text(0, 1, "选择一个请求查看依赖图", "dim")
+        warning = self.snapshot.get("state_error")
+        s.text(0, 2, ("状态库暂不可用；显示旧快照" if warning else
+                      "Tab 选卡 · n/p 换组 · hjkl 平移 · i 详情 · f 适配 · q 关闭"),
+               "wait" if warning else "dim")
+        if cols < 46 or rows < 14:
+            s.text(0, 4, "窗口过小，请扩大后查看任务视图。", "wait")
             return s
-        world = Screen(cols, rows - 6)
+        inspector_w = 33 if cols >= 100 and self.show_inspector else 0
+        graph_w = cols - (inspector_w + 1 if inspector_w else 0)
+        graph_h = rows - 6 - (9 if not inspector_w else 0)
+        world = Screen(graph_w, graph_h)
         world.origin_x, world.origin_y = self.x, self.y
         for source, target in self.edges:
-            x1, y1 = source["x"] + 19, source["y"] + 5
-            x2, y2 = target["x"] + 19, target["y"]
+            x1, y1 = source["x"] + 15, source["y"] + 5
+            x2, y2 = target["x"] + 15, target["y"]
             mid = (y1 + y2) // 2
             for y in range(max(y1, self.y), min(mid + 1, self.y + world.rows)):
                 world.text(x1, y, "│", "dim")
-            for x in range(
-                max(min(x1, x2), self.x), min(max(x1, x2) + 1, self.x + cols)
-            ):
+            for x in range(max(min(x1, x2), self.x), min(max(x1, x2) + 1, self.x + graph_w)):
                 world.text(x, mid, "─", "dim")
             for y in range(max(mid, self.y), min(y2, self.y + world.rows)):
                 world.text(x2, y, "│", "dim")
             world.text(x2, y2 - 1, "▼", "dim")
-        for x, y, title, color in self.headings:
-            world.text(x, y, title, color)
+        for x, y, text_value, color in self.headings:
+            world.text(x, y, clipped(text_value, graph_w - x), color)
         for node in self.nodes:
             x, y = node["x"], node["y"]
+            if x >= self.x + graph_w or y >= self.y + graph_h:
+                continue
+            label = "● 执行中" if node["running"] else self.state(node)
             color = (
-                "accent"
-                if node["key"] == self.selected
-                else "active"
-                if node["running"]
+                "accent" if node["key"] == self.selected
+                else "bad" if node["status"] in ("blocked", "triage", "failed")
+                else "active" if node["running"]
+                else "good" if node["status"] in ("done", "archived")
+                else "wait" if node["status"] in ("ready", "todo")
                 else "dim"
             )
-            world.box(x, y, 38, 5, color)
-            indicator = (
-                "● 执行中"
-                if node["running"]
-                else "○ 未执行"
-                if node["running"] is False
-                else "? 执行未知"
-            )
-            world.text(x + 2, y + 1, clipped(node["id"] + " " + indicator, 34), color)
-            world.text(x + 2, y + 2, clipped(node["title"], 34))
-            world.text(
-                x + 2,
-                y + 3,
-                clipped(self.state(node) + " / " + node["instance_id"], 34),
-                "wait" if node["errors"] else "dim",
-            )
+            world.box(x, y, 30, 5, color)
+            for fill_y in range(y + 1, y + 4):
+                world.text(x + 1, fill_y, " " * 28)
+            world.text(x + 1, y + 1, clipped(node["id"] + "  " + label, 28), color)
+            world.text(x + 1, y + 2, clipped(node["title"], 28))
+            world.text(x + 1, y + 3, clipped(node["instance_id"], 28), "dim")
         for row in range(world.rows):
-            s.cells[row + 3] = world.cells[row]
+            s.cells[row + 3][:graph_w] = world.cells[row][:graph_w]
         node = self.selection()
-        s.text(0, rows - 3, "─" * cols, "dim")
+        detail_x = 0
+        detail_y = rows - 10
+        detail_w = cols
+        detail_h = 8
+        if inspector_w:
+            detail_x = graph_w + 1
+            detail_y = 3
+            detail_w = inspector_w
+            detail_h = rows - 5
+        self._inspector(s, node, detail_x, detail_y, detail_w, detail_h)
+        s.text(0, rows - 2, "─" * cols, "dim")
         s.text(
             0,
             rows - 2,
@@ -404,24 +466,54 @@ class Canvas:
             else "暂无卡片",
             "accent",
         )
-        detail = "每 0.5 秒刷新 · 任务来自当前状态库 · 关闭只退出查看"
-        if node:
-            detail = (
-                "；".join(node["errors"])
-                or node["block_reason"]
-                or self._terms(node)
-                or detail
-            )
-        s.text(
-            0,
-            rows - 1,
-            detail,
-            "wait" if node and (node["errors"]) else "dim",
-        )
+        position = f" · 视口 x={self.x} y={self.y}" if self.x or self.y else ""
+        s.text(0, rows - 1, "只读 · 每 0.5 秒刷新 · 任务来自当前状态库 · q 退出" + position, "dim")
         return s
 
+    @staticmethod
+    def _inspector(s, node, x, y, w, h):
+        if w < 12 or h < 5:
+            return
+        s.box(x, y, w, h, "dim")
+        if node is None:
+            s.text(x + 2, y + 2, "未选择卡片", "dim")
+            return
+        s.text(x + 2, y + 1, clipped(node["id"], w - 4), "dim")
+        s.text(x + 2, y + 2, clipped(node["title"], w - 4), "normal")
+        s.text(x + 2, y + 3, Canvas.state(node) + " / " + node["instance_id"], "accent")
+        line = y + 5
+        for label, value in (
+            ("依赖", ", ".join(node.get("needs") or []) or "无"),
+            ("阻塞", node.get("block_reason") or "无"),
+            ("生成", str(node.get("generation") or 1)),
+        ):
+            s.text(x + 2, line, label, "dim")
+            s.text(x + 8, line, clipped(str(value), max(1, w - 10)), "normal")
+            line += 1
+        terms = Canvas._terms(node)
+        if terms:
+            for part in _wrap(terms, max(8, w - 4))[:3]:
+                s.text(x + 2, line, part, "dim")
+                line += 1
+        line += 1
+        body = node.get("body") or ""
+        contract, acceptance = _split_body(body)
+        s.text(x + 2, line, "契约", "dim")
+        line += 1
+        for part in _wrap(contract, max(8, w - 4))[:4]:
+            s.text(x + 2, line, part, "normal")
+            line += 1
+        if line < y + h - 4:
+            s.text(x + 2, line, "验收", "dim")
+            line += 1
+            for part in _wrap(acceptance, max(8, w - 4))[:4]:
+                if line >= y + h - 1:
+                    break
+                s.text(x + 2, line, part, "normal")
+                line += 1
+        s.text(x + 2, y + h - 1, "i 收起详情", "dim")
 
-def run(reader):
+def run(reader, select_card=None):
     if os.name != "posix":
         raise SystemExit("交互画布目前需要 POSIX 终端；请用 --json 或 --snapshot。")
     import termios
@@ -433,7 +525,7 @@ def run(reader):
         )
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
-    canvas = Canvas(reader.read())
+    canvas = Canvas(reader.read(), select_card=select_card)
     next_refresh = time.monotonic() + 0.5
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     pending = ""
@@ -491,7 +583,7 @@ def run(reader):
                     pending = pending[3:]
                 else:
                     key, pending = pending[0], pending[1:]
-                    if key in ("q", "\x03", "\x04"):
+                    if key in ("q", "\x1b", " ", "\x03", "\x04"):
                         return
                     canvas.key(key, cols, rows)
                 dirty = True

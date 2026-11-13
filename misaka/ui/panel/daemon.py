@@ -2096,9 +2096,12 @@ class Daemon:
                          if params.get("workspace") else None)
             from misaka.core.research import runs
             contexts = runs.task_contexts(self._board())
+            request_titles = dict(self._board().execute(
+                "SELECT id,title FROM work_requests").fetchall())
             cards = []
             for r in self._board().execute(
-                    "SELECT id,status,title,assignee,instance_id,workspace,origin_session,session_file FROM card_state ORDER BY created_at"):
+                    "SELECT id,status,title,assignee,instance_id,workspace,origin_session,"
+                    "session_file,request_id FROM card_state ORDER BY created_at"):
                 context = contexts.get(r["id"])
                 project = context["workspace"] if context else r["workspace"]
                 if workspace and project != workspace:
@@ -2109,6 +2112,8 @@ class Daemon:
                 cards.append({"id": r["id"], "status": r["status"], "title": r["title"],
                               "assignee": r["assignee"], "workspace": r["workspace"], "project": project,
                               "origin_session": r["origin_session"], "research": context,
+                              "request_id": r["request_id"],
+                              "request_title": request_titles.get(r["request_id"]),
                               "has_session": transcript is not None, "session_file": transcript})
             from misaka.core import session_catalog
             paths = [(p.reported or {}).get("session") for p in getattr(self, "panes", {}).values()]
@@ -2333,6 +2338,11 @@ class Daemon:
         if method == "pane.close":
             self.close(params["id"], expected_generation=params.get("expected_generation"))
             return {"closed": True}
+        if method == "space.forget":
+            # An explicit space close also forgets the folder; sessions stay in the catalog.
+            self.known_spaces.pop(params["id"], None)
+            self._write_spaces()
+            return {"forgotten": params["id"]}
         if method == "server.stop":
             self._stopping.set()
             return {"stopping": True}

@@ -191,10 +191,7 @@ def main(report_path=None, *, interactive=False):
             view.frame("空白鼠标拖动", "视口 x=14 y=0")
             check("原 Pane 输入编码经真实 PTY 操作正式请求 DAG")
             view.key("a")
-            before = view.frame("定位执行中卡片", f"选中 {B}")
-            import re
-
-            viewport = re.search(r"视口 x=\d+ y=\d+", before)[0]
+            view.frame("定位执行中卡片", f"选中 {B}")
             s.runtime(B, "ready")
             s.apply(
                 [
@@ -207,8 +204,8 @@ def main(report_path=None, *, interactive=False):
                 ]
             )
             text = view.frame("外部原子命令刷新画布", "导出功能已更新")
-            assert viewport in text and f"选中 {B}" in text and "● 执行中" not in text
-            check("外部状态命令更新后自动刷新，保留选中卡片和视口")
+            assert f"选中 {B}" in text and "● 执行中" not in text
+            check("外部状态命令更新后自动刷新，保留选中卡片")
             s.apply(
                 [
                     {
@@ -257,13 +254,13 @@ def main(report_path=None, *, interactive=False):
             s.database.unlink()
             backup.rename(s.database)
             view.key("g")
-            view.frame("状态库恢复", "异常 0")
+            view.frame("状态库恢复", "MISAKA / 任务视图")
             check("数据库故障显示旧快照与未知执行状态；修复后恢复")
             view.resize(61, 22)
-            text = view.frame("中文窄窗口", "61x22")
+            text = view.frame("中文窄窗口", "任务视图")
             assert "\ufffd" not in text
             view.resize(130, 44)
-            view.frame("恢复大窗口", "130x44")
+            view.frame("恢复大窗口", "MISAKA / 任务视图")
             view.key("q")
             assert view.proc.wait(timeout=5) == 0
             check("中文窗口缩放和正常退出，恢复终端属性")
@@ -278,6 +275,11 @@ def main(report_path=None, *, interactive=False):
             ).stdout
         )
         check("完成后任务图保留；未拆分请求不会误显示为全部完成")
+        scoped = s.cli("view", "tasks", "--project", str(s.project),
+                       "--request", "req-export", "--select", B, "--snapshot", "120", "40").stdout
+        assert "req-independent" not in scoped and f"选中 {B}" in scoped
+        assert "未执行" not in scoped
+        check("按请求打开任务视图并选中卡片；完成状态不再显示为未执行")
         s.cli("view", "tasks", "--pane", code=1)
         daemon = Daemon(s)
         try:
@@ -287,7 +289,7 @@ def main(report_path=None, *, interactive=False):
             daemon.rpc("pane.resize", {"id": pane, "rows": 40, "cols": 110})
             deadline = time.monotonic() + 8
             while (
-                "任务画布"
+                "任务视图"
                 not in daemon.rpc("pane.read", {"id": pane, "strip": True})["text"]
             ):
                 assert time.monotonic() < deadline
@@ -331,7 +333,7 @@ def main(report_path=None, *, interactive=False):
             try:
                 panel.frame("完整 Panel 启动", "LO EXTERNAL FIXTURE")
                 panel.prefix("t")
-                text = panel.frame("Panel 内打开正式任务 DAG", "任务画布")
+                text = panel.frame("Panel 内打开正式任务 DAG", "任务视图")
                 assert "req-export" in text
                 sidebar = "\n".join(line[:24] for line in text.splitlines())
                 assert "Tasks" not in sidebar

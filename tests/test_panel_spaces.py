@@ -115,3 +115,12 @@ async def test_a_pane_program_is_told_its_space(daemon, tmp_path, monkeypatch):
         for pane in panes:
             daemon.close(pane.id)
         await asyncio.gather(*list(daemon._reapers), return_exceptions=True)
+
+
+def test_an_explicit_close_forgets_the_space(daemon, tmp_path):
+    _write_registry({"wforget01": {"folder": str(tmp_path), "name": "gone"}})
+    _record("wforget01")
+    daemon._load_spaces()
+    daemon._api("space.forget", {"id": "wforget01"})
+    assert "wforget01" not in _registry()
+    assert daemon._api("layout.get", {})["dormant"] == []

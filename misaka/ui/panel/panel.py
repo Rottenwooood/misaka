@@ -2,9 +2,9 @@
 
 Rendering: the daemon keeps a terminal emulator per pane; the panel subscribes
 to dirty rows from every pane and lays them out itself: herdr's sidebar on the left
-(spaces = folders on top, agents = panes below), a tab row at the top of the
-main area, and a per-tab BSP split tree (splitting only the focused pane; each
-pane gets a border and joints are merged). Colors come from the engine's
+(spaces, sessions and the board's tasks), a tab row at the top of the main
+area, and a per-tab BSP split tree (splitting only the focused pane; each pane
+gets a border and joints are merged). Colors come from the engine's
 built-in dark/light theme, adapted to the terminal background; only herdr's
 color roles are borrowed.
 
@@ -12,7 +12,7 @@ Controls: click a tab, sidebar entry or pane to focus it. Prefix key ctrl+b,
 then: 1-9 switch tab | n/p cycle tabs | hjkl move focus | c new tab | t tasks |
 v / - split side by side / stacked | z zoom | g navigator | [ copy mode | r resize |
 T / W rename tab / space |
-x close pane | d quit (Last Order and the Sisters shut down with the panel) | ? key help |
+x close pane | X close tab | Q close space | d quit (everything shuts down) | ? key help |
 ctrl+b again sends a literal ctrl+b.
 """
 import base64
@@ -308,9 +308,13 @@ def render_tab_bar(tab_names, active_index, view, area, tab_scroll=0, zoomed=())
         else:
             fg, bg, bold = hui.OVERLAY1, hui.SURFACE0, False
         name = hui.tab_chrome_label(tab_names, index, zoomed)   # tabs.rs tab_label: " Z" while zoomed
-        padding = max(0, rect.width - hui.display_width(name))
+        close = index == active_index and rect.width >= 8
+        room = rect.width - (2 if close else 0)
+        padding = max(0, room - hui.display_width(name))
         left_pad = padding // 2
-        put(rect.x, " " * left_pad + name + " " * (padding - left_pad), rect.width, fg, bg, bold)
+        put(rect.x, " " * left_pad + name + " " * (padding - left_pad), room, fg, bg, bold)
+        if close:
+            put(rect.x + rect.width - 2, "×", 2, fg, bg, bold=True)
 
     if right.width:
         put(right.x, " > ", right.width,
@@ -703,10 +707,6 @@ def _render_spaces(canvas, spaces, area, scroll, hits, reveal=False):
         _put_scrollbar(canvas, metrics,
                        hui.Rect(area.x + area.width - 1, body.y, 1, body.height))
     if list_bottom > area.y:                              # 1196-1218 footer (mouse_capture is always on here)
-        new_rect = hui.sidebar_new_button_rect(area)
-        canvas.put(new_rect.x, new_rect.y, " new", fg=hui.OVERLAY0,
-                   clip=new_rect.x + new_rect.width)
-        hits.append((new_rect, ("new",)))
         # herdr puts its global menu here (Settings/Keybinds/Reload/Detach) -- all panel-level
         # things MISAKA deliberately lacks. A mouse entry into the prefix layer is useful instead.
         prefix_rect = hui.global_launcher_rect(area, "prefix")
@@ -787,7 +787,54 @@ def _render_agents(canvas, agents, area, scroll, sort, hits):
     return state
 
 
-def _render_collapsed(canvas, spaces, sessions, agents, area, hits):
+def _render_tasks(canvas, tasks, area, scroll, hits):
+    """MISAKA: the board's cards, grouped by work request; a card opens its task view."""
+    P = hui.PALETTE
+    state = {"rect": area, "scroll": 0, "max_scroll": 0}
+    if area.height < 2:
+        return state
+    clip = area.x + area.width
+    canvas.put(area.x, area.y, "─" * area.width, fg=P["surface_dim"], clip=clip)
+    canvas.put(area.x, area.y + 1, " tasks", fg=hui.OVERLAY0, bold=True, clip=clip)
+    body = hui.Rect(area.x, area.y + 2, area.width, max(0, area.height - 2))
+    state["body"] = body
+    heights = [1 if row["kind"] == "group" else 2 for row in tasks]
+    metrics = hui.list_scroll_metrics(heights, body.height, scroll)
+    scroll = min(scroll, metrics["max_offset_from_bottom"])
+    has_bar = hui.should_show_scrollbar(metrics) and body.width > 0 and body.height > 0
+    body = hui.Rect(body.x, body.y, max(0, body.width - int(has_bar)), body.height)
+    state.update(scroll=scroll, max_scroll=metrics["max_offset_from_bottom"])
+    row_y = body.y
+    for row, want in zip(tasks[scroll:], heights[scroll:]):
+        height = min(want, body.y + body.height - row_y)
+        if height <= 0:
+            break
+        if row["kind"] == "group":
+            canvas.put(body.x, row_y, "▾ " + row["label"], fg=hui.OVERLAY0, bold=True,
+                       clip=body.x + body.width)
+            hits.append((hui.Rect(body.x, row_y, body.width, 1), ("task-group", row["request_id"])))
+        elif row["kind"] == "card":
+            glyph, color = hui.state_dot(row["state"], row["seen"])
+            canvas.put(body.x, row_y, glyph, fg=color, clip=body.x + body.width)
+            canvas.put(body.x + 2, row_y, row["id"], fg=hui.TEXT, bold=True,
+                       clip=body.x + body.width)
+            label = row["status_label"]
+            canvas.put(body.x + max(0, body.width - _wcwidth(label)), row_y, label,
+                       fg=color, clip=body.x + body.width)
+            canvas.put(body.x + 2, row_y + 1, row["title"], fg=P["subtext0"],
+                       clip=body.x + body.width)
+            hits.append((hui.Rect(body.x, row_y, body.width, height),
+                         ("task", row["request_id"], row["id"])))
+        else:
+            canvas.put(body.x, row_y, "尚无任务", fg=hui.OVERLAY0, clip=body.x + body.width)
+        row_y += height
+    if has_bar:
+        _put_scrollbar(canvas, metrics,
+                       hui.Rect(area.x + area.width - 1, body.y, 1, body.height))
+    return state
+
+
+def _render_collapsed(canvas, spaces, sessions, tasks, area, hits):
     """sidebar.rs:790-904 render_sidebar_collapsed: a numbered space glance on top, then a
     divider and a numbered glance per further section — MISAKA mirrors the expanded split,
     so sessions sit between spaces and agents; "»" expands again."""
@@ -827,17 +874,19 @@ def _render_collapsed(canvas, spaces, sessions, agents, area, hits):
                 glyph, color = "·", hui.OVERLAY0
             canvas.put(sess_area.x + 2, y, glyph, fg=color, clip=clip)
             hits.append((hui.Rect(sess_area.x, y, sess_area.width, 1), entry["action"]))
-    detail_area = areas.get("agents", hui.RECT_DEFAULT)
+    detail_area = areas.get("tasks", hui.RECT_DEFAULT)
     if detail_area != hui.RECT_DEFAULT:
         content = hui.Rect(detail_area.x, detail_area.y, detail_area.width,
                            max(0, detail_area.height - 1))     # the last row keeps the toggle
-        for index, entry in enumerate(agents[:content.height]):
+        cards = [row for row in tasks if row["kind"] == "card"]
+        for index, entry in enumerate(cards[:content.height]):
             y = content.y + index
             glyph, color = hui.state_dot(entry["state"], entry["seen"])
             canvas.put(content.x, y, f"{index + 1:<2}", fg=hui.OVERLAY0,
                        clip=content.x + content.width)
             canvas.put(content.x + 2, y, glyph, fg=color, clip=content.x + content.width)
-            hits.append((hui.Rect(content.x, y, content.width, 1), ("pane", entry["pane"])))
+            hits.append((hui.Rect(content.x, y, content.width, 1),
+                         ("task", entry["request_id"], entry["id"])))
     toggle = hui.collapsed_sidebar_toggle_rect(area)
     canvas.put(toggle.x, toggle.y, "»", fg=hui.OVERLAY0)
     hits.append((toggle, ("toggle",)))
@@ -1126,7 +1175,7 @@ def format_navigator(rows, selected, scroll, rect, editor, *, search_focused=Fal
             "metrics": metrics}
 
 
-SECTION_WEIGHTS = (("spaces", 0.9), ("sessions", 1.3), ("agents", 1.1))
+SECTION_WEIGHTS = (("spaces", 0.8), ("sessions", 1.0), ("tasks", 1.6))
 
 
 STAMP_W = 5              # the right column of a session row; the title keeps the rest
@@ -1312,11 +1361,11 @@ def _render_sessions(canvas, entries, area, scroll, hits, mode="here"):
     return state
 
 
-def format_sidebar(spaces, agents, width, rows, *, collapsed=False, scrolls=None,
+def format_sidebar(spaces, tasks, width, rows, *, collapsed=False, scrolls=None,
                    sort="grouped", sessions=(), session_mode="here", reveal_space=False):
     """src/ui/sidebar.rs render_sidebar (1011-1035) / render_sidebar_collapsed (790-904) on a
     canvas covering the whole sidebar rect, separator column included. MISAKA addition:
-    a sessions section between spaces and agents; the three share the height by weight.
+    spaces, sessions and the board's tasks; the three share the height by weight.
     Returns ``(lines, hits, sections)``: one ANSI string per screen row; ``hits`` =
     [(Rect, action)] in draw order (search it backwards, the last drawn wins); ``sections``
     = per-section scroll state for the wheel. Pure, so testable."""
@@ -1329,7 +1378,7 @@ def format_sidebar(spaces, agents, width, rows, *, collapsed=False, scrolls=None
     for y in range(rows):                 # 1023-1027: the separator, surface_dim outside navigate mode
         canvas.put(width - 1, y, "│", fg=hui.PALETTE["surface_dim"])
     if collapsed:
-        _render_collapsed(canvas, spaces, sessions, _sorted_agents(agents, sort), area, hits)
+        _render_collapsed(canvas, spaces, sessions, tasks, area, hits)
     else:
         content_w = max(0, width - 1)
         for key, y, height in hui.allocate_sections(rows, SECTION_WEIGHTS):
@@ -1341,8 +1390,7 @@ def format_sidebar(spaces, agents, width, rows, *, collapsed=False, scrolls=None
                 sections[key] = _render_sessions(canvas, sessions, sub, scrolls.get(key, 0), hits,
                                                  session_mode)
             else:
-                sections[key] = _render_agents(canvas, _sorted_agents(agents, sort), sub,
-                                               scrolls.get(key, 0), sort, hits)
+                sections[key] = _render_tasks(canvas, tasks, sub, scrolls.get(key, 0), hits)
         toggle = hui.expanded_sidebar_toggle_rect(area)       # 1531-1553: "«" collapses
         canvas.put(toggle.x, toggle.y, "«", fg=hui.OVERLAY0)
         hits.append((toggle, ("toggle",)))
@@ -1446,7 +1494,8 @@ _HELP_ROWS = [
     ("z", "Zoom: focused pane fills the tab"), ("g", "Go to: search every space and pane"),
     ("[", "Copy mode: move, search, select, copy"), ("r", "Resize: h/l width, j/k height"),
     ("T / W", "Rename this tab / this space"),
-    ("x", "Close the focused pane"),
+    ("x / X", "Close the focused pane / the current tab"),
+    ("Q", "Close the current space (kills its panes)"),
     ("d", "Quit (everything shuts down)"), (PREFIX_NAME, f"Send a literal {PREFIX_NAME}"),
     ("esc", "Leave prefix mode"), ("Mouse", "Click focus, drag copy, 2× word"),
     ("", "esc, enter or ? closes this help"),
@@ -1989,6 +2038,41 @@ def launch():
             index = side_order.index(side["ws"]) if side["ws"] in side_order else 0
             switch_space(candidates[min(index, len(candidates) - 1)])
 
+    TASK_STATUS = {
+        "running": ("执行中", "working"), "review": ("待验收", "working"),
+        "done": ("完成", "idle"), "archived": ("已归档", "idle"),
+        "ready": ("待处理", "idle"), "todo": ("等依赖", "idle"),
+        "held": ("暂缓", "idle"), "blocked": ("受阻", "blocked"),
+        "triage": ("待分诊", "blocked"), "failed": ("失败", "blocked"),
+        "stopped": ("已停止", "idle"),
+    }
+
+    def task_rows():
+        """Board cards for this space, grouped by their work request."""
+        space = active_space()
+        folder = os.path.realpath(space["folder"] if space else os.getcwd())
+        groups = {}
+        for card in cards_cache["items"]:
+            project = card.get("project") or card.get("workspace")
+            if os.path.realpath(project or "") != folder:
+                continue
+            groups.setdefault(card.get("request_id") or "?", []).append(card)
+        rows = []
+        for request_id, cards in groups.items():
+            title = next((card.get("request_title") for card in cards
+                          if card.get("request_title")), request_id)
+            done = sum(card["status"] in ("done", "archived") for card in cards)
+            rows.append({"kind": "group", "request_id": request_id,
+                         "label": f"{title}  {done}/{len(cards)}"})
+            for card in cards:
+                label, state = TASK_STATUS.get(card["status"], (card["status"], "unknown"))
+                rows.append({
+                    "kind": "card", "request_id": request_id, "id": card["id"],
+                    "title": card["title"], "status_label": label,
+                    "state": state, "seen": card["status"] in ("done", "archived"),
+                })
+        return rows or [{"kind": "empty", "label": "尚无任务"}]
+
     cards_cache = {"items": [], "sessions": []}       # Board cards and the unified session inventory
     sessions_cache = {"rows": []}     # the sidebar draws from here: scanning on every frame would stat the disk per keystroke
     sess_folds = set()                # session groups start open; a click folds one
@@ -2202,6 +2286,7 @@ def launch():
 
     # ── Mode (herdr app::Mode): one value every handler and every drawing path reads ──
     mode = Mode.TERMINAL
+    mouse_quit = {"value": False}
 
     def leave_command_mode():
         """navigate.rs leave_command_mode: back to the copy mode still owning the focused
@@ -3227,7 +3312,7 @@ def launch():
         ui_map["bar"] = bar
         tab_line = render_tab_bar(names, active_tab(), bar, view["tab_bar_rect"],
                                   tab_scroll, zoomed)
-        rows_, agents = sidebar_model(spaces, listing, focused, side["ws"])
+        rows_, _agents = sidebar_model(spaces, listing, focused, side["ws"])
         for row in rows_:                     # the branch row, from the poll's git cache
             row["git"] = git_view(row["folder"])
         side_order[:] = [row["key"] for row in rows_]
@@ -3236,7 +3321,7 @@ def launch():
         active = next((row for row in rows_ if row["active"]), None)
         frame["title"] = sanitize_window_title(f"{hostname}: {active['label'] if active else ''}")
         side_lines, ui_map["hits"], ui_map["sections"] = format_sidebar(
-            rows_, agents, side["w"], rows, collapsed=side["collapsed"],
+            rows_, task_rows(), side["w"], rows, collapsed=side["collapsed"],
             scrolls=side_scrolls, sort=side["sort"],
             sessions=mark_open_sessions(sessions_cache["rows"], listing, focused),
             session_mode=side["sess_mode"], reveal_space=side["reveal"])
@@ -3800,16 +3885,28 @@ def launch():
         focus(out["pane_id"], force_layout=True)
         return out["pane_id"]
 
-    def open_tasks():
+    def open_tasks(request_id=None, card_id=None):
+        """Open one request's canvas, or focus the one already showing it."""
+        nonlocal listing
         space = active_space()
         project = os.path.realpath(space["folder"] if space else os.getcwd())
         existing = next((p for p in listing if p["alive"] and is_task_view(p.get("argv"))
                          and os.path.realpath(p["cwd"]) == project), None)
+        wanted = ["--request", request_id] if request_id else []
+        if card_id:
+            wanted += ["--select", card_id]
         if existing:
-            focus(existing["id"], force_layout=True)
-            return
-        argv, env = task_view_command([project])
-        new_pane(argv, "Tasks · 只读", place={"tab": focused}, cwd=project, env=env)
+            argv = list(existing.get("argv") or [])
+            same = all(part in argv for part in wanted) if wanted else True
+            if same:
+                focus(existing["id"], force_layout=True)
+                return
+            control.request("pane.close", {"id": existing["id"]})
+            pane_gone(existing["id"])
+            listing = panes()
+        argv, env = task_view_command([project], request_id=request_id, select=card_id)
+        title = f"Tasks · {request_id}" if request_id else "Tasks · 只读"
+        new_pane(argv, title, place={"tab": focused}, cwd=project, env=env)
 
     def new_space_here():
         """herdr new_workspace (the " new" button): another space in the same folder, its root a shell."""
@@ -3836,6 +3933,50 @@ def launch():
         if not any(p["alive"] for p in listing):
             return True
         refocus(survivors[0] if survivors else None, page_idx)
+        return False
+
+    def close_tab(index=None):
+        """Close every pane in one tab; the daemon drops the tab and an empty space."""
+        nonlocal listing
+        vis = visible_tabs()
+        index = active_tab() if index is None else index
+        if not (0 <= index < len(vis)):
+            return not any(p["alive"] for p in listing)
+        for pane_id in hui.pane_ids(vis[index]):
+            try:
+                control.request("pane.close", {"id": pane_id})
+            except RuntimeError:
+                pass
+            pane_gone(pane_id)
+        listing = panes()
+        reload_layout()
+        if not any(p["alive"] for p in listing):
+            return True
+        refocus(page_idx=index)
+        return False
+
+    def close_space(space_id=None):
+        """Kill every pane in a space; the space leaves the sidebar."""
+        nonlocal listing
+        space = next((item for item in spaces if item["id"] == (space_id or side["ws"])), None)
+        if space is None:
+            return not any(p["alive"] for p in listing)
+        for tab in space["tabs"]:
+            for pane_id in hui.pane_ids(tab):
+                try:
+                    control.request("pane.close", {"id": pane_id})
+                except RuntimeError:
+                    pass
+                pane_gone(pane_id)
+        listing = panes()
+        try:
+            control.request("space.forget", {"id": space["id"]})
+        except RuntimeError:
+            pass
+        reload_layout()
+        if not any(p["alive"] for p in listing):
+            return True
+        refocus()
         return False
 
     # ── Mouse (herdr app/input/mouse.rs handle_mouse + input/mod.rs handle_mouse_from_input_source) ──
@@ -3865,6 +4006,11 @@ def launch():
             return True
         for index, rect in enumerate(bar.tab_hit_areas):
             if rect.width and rect.x <= event.x < rect.x + rect.width:
+                if index == active_tab() and rect.width >= 8 and event.x >= rect.x + rect.width - 2:
+                    if close_tab(index):
+                        exit_reason[0] = "closed_all"
+                        mouse_quit["value"] = True
+                    return True
                 switch_tab(index)
                 return True
         if over(bar.scroll_left_hit_area):
@@ -3910,24 +4056,20 @@ def launch():
             focus(hit[1])
         elif hit[0] == "space":                   # herdr: click a space = switch workspace.
             switch_space(hit[1])
-        elif hit[0] == "new":                     # herdr: new workspace in the same folder.
-            new_space_here()
         elif hit[0] == "prefix":                  # a mouse press of the prefix key: next key is a command
             if mode is Mode.PREFIX:               # pressed again: cancel, like esc
                 leave_command_mode()
             else:
                 mode = Mode.PREFIX
                 draw_prefix_bar()
-        elif hit[0] == "sisters":                 # agents footer: summon a Sister as a new tab.
-            open_menu()
+        elif hit[0] == "task-group":              # a request header: its task view, fit all
+            open_tasks(request_id=hit[1])
+        elif hit[0] == "task":                    # a card: its request's task view, card selected
+            open_tasks(request_id=hit[1], card_id=hit[2])
         elif hit[0] == "sessgroup":               # MISAKA: the Last Order / Sisters groups fold.
             sess_folds.symmetric_difference_update({hit[1]})
             refresh_sessions()
             draw_sidebar()
-        elif hit[0] == "sessnew":                 # agents footer: a fresh Last Order session, a space of its own here
-            space = active_space()
-            new_pane([sys.executable, "-m", "misaka", "chat"], LO_TITLE, place={"space": True},
-                     cwd=space["folder"] if space else None)
         elif hit[0] == "sessmode":                # sessions header: this space <-> every folder
             side["sess_mode"] = "all" if side["sess_mode"] == "here" else "here"
             refresh_sessions()
@@ -4334,6 +4476,14 @@ def launch():
             if close_focused():
                 exit_reason[0] = "closed_all"
                 return "quit"
+        elif text == "X":
+            if close_tab():
+                exit_reason[0] = "closed_all"
+                return "quit"
+        elif text == "Q":
+            if close_space():
+                exit_reason[0] = "closed_all"
+                return "quit"
         elif text == "?":
             open_help()
         if mode is Mode.TERMINAL and copy["pane"] is not None:
@@ -4503,6 +4653,9 @@ def launch():
                 if isinstance(event, hin.Mouse):
                     flush_pane_out()
                     handle_mouse(event, now)
+                    if mouse_quit["value"]:
+                        quitting = True
+                        break
                 elif isinstance(event, hin.Paste):
                     handle_paste(event.text)
                 elif isinstance(event, hin.Focus):
