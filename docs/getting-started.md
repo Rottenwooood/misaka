@@ -33,6 +33,7 @@ uv tool install "misaka[providers] @ git+https://github.com/Rottenwooood/misaka.
 ```
 
 Install from this address; the package called `misaka` on PyPI is a different project.
+This fork installs from source; the prebuilt archive below belongs to upstream and does not contain this branch.
 A GitHub release also ships one prebuilt archive per architecture, with uv, git, ripgrep, fd and
 poppler inside it. macOS and Linux:
 `curl -fsSL https://raw.githubusercontent.com/Luciole-Studio/Misaka-Agent/main/scripts/install.sh | sh`.

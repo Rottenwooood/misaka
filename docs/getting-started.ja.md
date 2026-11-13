@@ -29,6 +29,7 @@ uv tool install "misaka[providers] @ git+https://github.com/Rottenwooood/misaka.
 ```
 
 必ずこのアドレスからインストールしてください。PyPI の `misaka` という名前のパッケージは別のプロジェクトです。
+このフォークはソースからインストールします。以下のビルド済みアーカイブは上流のもので、このブランチは含まれません。
 各 GitHub リリースにはアーキテクチャごとのビルド済みアーカイブもあり、uv、git、ripgrep、fd、poppler が入っています。macOS と Linux：
 `curl -fsSL https://raw.githubusercontent.com/Luciole-Studio/Misaka-Agent/main/scripts/install.sh | sh`。
 Windows PowerShell：

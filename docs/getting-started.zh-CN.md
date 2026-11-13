@@ -29,6 +29,7 @@ uv tool install "misaka[providers] @ git+https://github.com/Rottenwooood/misaka.
 ```
 
 请从这个地址安装；PyPI 上叫 `misaka` 的包是另一个项目。
+本分支从源码安装；下面的预编译包属于上游，不包含本分支。
 每个 GitHub release 也提供各架构的预编译包，内含 uv、git、ripgrep、fd 与 poppler。macOS 与 Linux：
 `curl -fsSL https://raw.githubusercontent.com/Luciole-Studio/Misaka-Agent/main/scripts/install.sh | sh`。
 Windows PowerShell：
