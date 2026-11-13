@@ -1194,3 +1194,20 @@ def test_the_sidebar_lists_cards_under_their_request():
     assert ("task-group", "req") in actions
     assert ("task", "req", "t_a10001") in actions
     assert "tasks" in sections
+
+
+def test_collapsed_sidebar_tolerates_a_session_without_a_seen_flag():
+    spaces = [{"key": "w1", "label": "p-test", "folder": "/p-test", "active": True,
+               "state": "idle", "seen": True, "alive": True}]
+    sessions = [{"kind": "item", "action": ("sess-open", "/tmp/s.jsonl"),
+                 "pane": "p1", "state": "idle", "label": "Last Order"}]
+    lines, _hits, _sections = panel_mod.format_sidebar(
+        spaces, [], 6, 24, collapsed=True, sessions=sessions)
+    assert lines
+
+
+def test_the_active_space_has_a_close_hit():
+    spaces = [{"key": "w1", "label": "p-test", "folder": "/p-test", "active": True,
+               "state": "idle", "seen": True, "alive": True}]
+    _lines, hits, _sections = panel_mod.format_sidebar(spaces, [], 40, 30)
+    assert any(action == ("space-close", "w1") for _rect, action in hits)

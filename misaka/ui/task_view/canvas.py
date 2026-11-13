@@ -151,6 +151,8 @@ class Canvas:
         self.select_card = select_card
         self.request_id = request_id
         self.show_inspector = True
+        self.panned = False
+        self.offset_x = self.offset_y = 0
         self.drag = None
         self.revision = 0
         self.snapshot = None
@@ -259,11 +261,13 @@ class Canvas:
         )
 
     def pan(self, dx, dy):
+        self.panned = True
         self.x = min(max(0, self.world_cols - 10), max(0, self.x + dx))
         self.y = min(max(0, self.world_rows - 3), max(0, self.y + dy))
 
     def locate(self, node, cols, rows):
         self.selected = node["key"]
+        self.panned = True
         self.x = max(0, node["x"] - max(0, (cols - 38) // 2))
         self.y = max(0, node["y"] - max(0, (rows - 12) // 2))
 
@@ -282,7 +286,7 @@ class Canvas:
                 self.pan(px - x, py - y)
                 self.drag = (x, y)
         elif code & 3 == 0:
-            hit = self.hit(x + self.x, y + self.y)
+            hit = self.hit(x + self.x - self.offset_x, y + self.y - self.offset_y)
             self.drag = (x, y) if hit is None else None
             if hit:
                 self.selected = hit["key"]
@@ -301,6 +305,7 @@ class Canvas:
         if key in directions:
             self.pan(*directions[key])
         elif key == "g" or key == "f":
+            self.panned = False
             self.x = self.y = 0
         elif key == "i":
             self.show_inspector = not self.show_inspector
@@ -410,11 +415,13 @@ class Canvas:
         inspector_w = 33 if cols >= 100 and self.show_inspector else 0
         graph_w = cols - (inspector_w + 1 if inspector_w else 0)
         graph_h = rows - 6 - (9 if not inspector_w else 0)
+        self.offset_x = max(0, (graph_w - (self.world_cols - 2)) // 2)
+        self.offset_y = max(0, (graph_h - (self.world_rows - 2)) // 2)
         world = Screen(graph_w, graph_h)
         world.origin_x, world.origin_y = self.x, self.y
         for source, target in self.edges:
-            x1, y1 = source["x"] + 15, source["y"] + 5
-            x2, y2 = target["x"] + 15, target["y"]
+            x1, y1 = source["x"] + 15 + self.offset_x, source["y"] + 5 + self.offset_y
+            x2, y2 = target["x"] + 15 + self.offset_x, target["y"] + self.offset_y
             mid = (y1 + y2) // 2
             for y in range(max(y1, self.y), min(mid + 1, self.y + world.rows)):
                 world.text(x1, y, "│", "dim")
@@ -426,7 +433,7 @@ class Canvas:
         for x, y, text_value, color in self.headings:
             world.text(x, y, clipped(text_value, graph_w - x), color)
         for node in self.nodes:
-            x, y = node["x"], node["y"]
+            x, y = node["x"] + self.offset_x, node["y"] + self.offset_y
             if x >= self.x + graph_w or y >= self.y + graph_h:
                 continue
             label = "● 执行中" if node["running"] else self.state(node)

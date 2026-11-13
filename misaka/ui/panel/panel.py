@@ -701,6 +701,10 @@ def _render_spaces(canvas, spaces, area, scroll, hits, reveal=False):
             _put_tokens(canvas, card.x + 3, row_y + 1,
                         _git_row_tokens(space["git"], space["active"]),
                         max(0, card.width - 3), card.x + card.width)
+        if space["active"] and card.width > 2:
+            close = hui.Rect(card.x + card.width - 2, card.y, 1, 1)
+            canvas.put(close.x, close.y, "×", fg=hui.OVERLAY0, clip=card.x + card.width)
+            hits.append((close, ("space-close", space["key"])))
         hits.append((card, ("space", space["key"])))
         row_y += height
     if has_bar:
@@ -869,7 +873,7 @@ def _render_collapsed(canvas, spaces, sessions, tasks, area, hits):
             canvas.put(sess_area.x, y, f"{index + 1:<2}",
                        fg=hui.TEXT if entry.get("active") else hui.OVERLAY0, clip=clip)
             if entry.get("pane"):              # open in a pane: its state dot, like expanded
-                glyph, color = hui.state_dot(entry["state"], entry["seen"])
+                glyph, color = hui.state_dot(entry.get("state", "unknown"), entry.get("seen", True))
             else:
                 glyph, color = "·", hui.OVERLAY0
             canvas.put(sess_area.x + 2, y, glyph, fg=color, clip=clip)
@@ -881,7 +885,7 @@ def _render_collapsed(canvas, spaces, sessions, tasks, area, hits):
         cards = [row for row in tasks if row["kind"] == "card"]
         for index, entry in enumerate(cards[:content.height]):
             y = content.y + index
-            glyph, color = hui.state_dot(entry["state"], entry["seen"])
+            glyph, color = hui.state_dot(entry.get("state", "unknown"), entry.get("seen", True))
             canvas.put(content.x, y, f"{index + 1:<2}", fg=hui.OVERLAY0,
                        clip=content.x + content.width)
             canvas.put(content.x + 2, y, glyph, fg=color, clip=content.x + content.width)
@@ -2248,14 +2252,39 @@ def launch():
         return next((row for row in sessions_cache["rows"]
                      if row["kind"] == "item" and row["action"] == action), None)
 
+    def session_access(row):
+        """How a session row can be opened: attach, resume its instance, or history only."""
+        if row.get("control"):
+            return "attach"
+        instance_id = row.get("instance_id")
+        path = row.get("path")
+        if instance_id and path:
+            try:
+                from misaka.core.platform import instances
+                current = instances.get(instance_id)
+                if current["session_file"] and (
+                        os.path.realpath(current["session_file"]) == os.path.realpath(path)):
+                    return "instance"
+            except (OSError, ValueError):
+                pass
+        return "read-only"
+
     def reopen_session(hit):
-        """Focus the owner pane or attach to its session; history never starts a worker."""
+        """Focus the owner pane, resume a writable instance, or open saved history read-only."""
+        nonlocal listing
         from misaka.core import session_catalog
+        row = session_row(hit)
+        access = session_access(row or {})
         open_pane = session_pane(hit)
         if open_pane:
-            focus(open_pane)
-            return
-        row = session_row(hit)
+            pane = next((p for p in listing if p["id"] == open_pane), {})
+            if access != "read-only" and "--read-only" in (pane.get("argv") or ()):
+                control.request("pane.close", {"id": open_pane})
+                pane_gone(open_pane)
+                listing = panes()
+            else:
+                focus(open_pane)
+                return
         if row is None or not session_catalog.available(row):
             refresh_sessions()
             draw_sidebar()
@@ -2278,9 +2307,15 @@ def launch():
             place = {"tab": hui.pane_ids(current["tabs"][0])[0]}
         else:
             place = {"space": current["id"], "name": row["label"]}
-        argv = [sys.executable, "-m", "misaka", "chat", "--attach" if row.get("control") else "--read-only",
-                "--session" if path else "--catalog", path or row["catalog_file"]]
+        if access == "instance":
+            argv = [sys.executable, "-m", "misaka", "chat", "--instance", row["instance_id"]]
+        else:
+            argv = [sys.executable, "-m", "misaka", "chat",
+                    "--attach" if access == "attach" else "--read-only",
+                    "--session" if path else "--catalog", path or row["catalog_file"]]
         pane_id = new_pane(argv, row["label"], place=place, cwd=folder)
+        if access == "read-only":
+            show_bottom_bar(" saved transcript · read-only · open its instance to take control")
         if kind == "foreground" and role == "last-order":
             auto_names[pane_id] = path
 
@@ -4056,6 +4091,10 @@ def launch():
             focus(hit[1])
         elif hit[0] == "space":                   # herdr: click a space = switch workspace.
             switch_space(hit[1])
+        elif hit[0] == "space-close":             # MISAKA: the active space's × kills its panes.
+            if close_space(hit[1]):
+                exit_reason[0] = "closed_all"
+                mouse_quit["value"] = True
         elif hit[0] == "prefix":                  # a mouse press of the prefix key: next key is a command
             if mode is Mode.PREFIX:               # pressed again: cancel, like esc
                 leave_command_mode()
