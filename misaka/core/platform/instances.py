@@ -238,8 +238,10 @@ class Writer:
     def flags(self, flags):
         """Choose the authoritative session after obtaining its exclusive writer lock."""
         item = get(self.id)
-        result, index = [], 0
-        # Callers may pass only the current file/directory, never historical or heuristic selectors.
+        result, index, chosen = [], 0, None
+        root = Path(session_dir(self.id)).resolve()
+        # A session in this instance's own history can be adopted and made writable again;
+        # another instance's file is still refused.
         while index < len(flags):
             arg = flags[index]
             if arg == "--":
@@ -247,9 +249,15 @@ class Writer:
                 break
             if arg in ("--session", "--session-dir"):
                 value = flags[index + 1]
-                expected = item["session_file"] if arg == "--session" else session_dir(self.id)
-                if not expected or os.path.realpath(value) != os.path.realpath(expected):
-                    raise ValueError("An instance can write only its current session; historical sessions are read-only")
+                path = Path(value).expanduser().resolve()
+                if arg == "--session-dir":
+                    if path != root:
+                        raise ValueError("An instance can write only inside its own session directory")
+                else:
+                    expected = Path(item["session_file"]).resolve() if item["session_file"] else None
+                    if path != expected and not path.is_relative_to(root):
+                        raise ValueError("An instance can write only its own sessions")
+                    chosen = str(path)
                 index += 2
                 continue
             if arg in ("-c", "--continue", "-r", "--resume", "--fork", "--no-session"):
@@ -257,8 +265,9 @@ class Writer:
             result.append(arg)
             index += 1
         selected = ["--session-dir", session_dir(self.id)]
-        if item["session_file"]:
-            selected += ["--session", item["session_file"]]
+        session = chosen or item["session_file"]
+        if session:
+            selected += ["--session", session]
         return selected + result
 
     def bind(self, path):

@@ -217,7 +217,7 @@ class Canvas:
                             by_id[tid],
                             key=(project["path"], tid),
                             x=2 + column * 34,
-                            y=base_y + 2 + rank * 6,
+                            y=base_y + 2 + rank * 8,
                         )
                         parents = [by_id.get(p) for p in node["needs"]]
                         node["waiting"] = bool(node["needs"]) and any(
@@ -235,7 +235,7 @@ class Canvas:
                 self.world_cols = max(
                     self.world_cols, max(map(len, columns.values()), default=1) * 34 + 4
                 )
-                base_y += max(ranks.values(), default=0) * 6 + 7
+                base_y += max(ranks.values(), default=0) * 8 + 9
             base_y += 2
         self.world_rows = max(1, base_y)
         if self.select_card is not None:
@@ -425,10 +425,16 @@ class Canvas:
             mid = (y1 + y2) // 2
             for y in range(max(y1, self.y), min(mid + 1, self.y + world.rows)):
                 world.text(x1, y, "│", "dim")
-            for x in range(max(min(x1, x2), self.x), min(max(x1, x2) + 1, self.x + graph_w)):
-                world.text(x, mid, "─", "dim")
-            for y in range(max(mid, self.y), min(y2, self.y + world.rows)):
+            if x1 == x2:
+                world.text(x2, mid, "│", "dim")
+            else:
+                for x in range(max(min(x1, x2), self.x), min(max(x1, x2) + 1, self.x + graph_w)):
+                    world.text(x, mid, "─", "dim")
+            for y in range(max(mid + 1, self.y), min(y2, self.y + world.rows)):
                 world.text(x2, y, "│", "dim")
+            if x1 != x2:
+                world.text(x1, mid, "└" if x2 > x1 else "┘", "dim")
+                world.text(x2, mid, "┐" if x2 > x1 else "┌", "dim")
             world.text(x2, y2 - 1, "▼", "dim")
         for x, y, text_value, color in self.headings:
             world.text(x, y, clipped(text_value, graph_w - x), color)

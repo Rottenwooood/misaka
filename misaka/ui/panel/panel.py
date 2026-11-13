@@ -12,7 +12,7 @@ Controls: click a tab, sidebar entry or pane to focus it. Prefix key ctrl+b,
 then: 1-9 switch tab | n/p cycle tabs | hjkl move focus | c new tab | t tasks |
 v / - split side by side / stacked | z zoom | g navigator | [ copy mode | r resize |
 T / W rename tab / space |
-x close pane | X close tab | Q close space | d quit (everything shuts down) | ? key help |
+x close pane | X close tab | q close space | d quit (everything shuts down) | ? key help |
 ctrl+b again sends a literal ctrl+b.
 """
 import base64
@@ -701,11 +701,11 @@ def _render_spaces(canvas, spaces, area, scroll, hits, reveal=False):
             _put_tokens(canvas, card.x + 3, row_y + 1,
                         _git_row_tokens(space["git"], space["active"]),
                         max(0, card.width - 3), card.x + card.width)
+        hits.append((card, ("space", space["key"])))
         if space["active"] and card.width > 2:
             close = hui.Rect(card.x + card.width - 2, card.y, 1, 1)
             canvas.put(close.x, close.y, "×", fg=hui.OVERLAY0, clip=card.x + card.width)
             hits.append((close, ("space-close", space["key"])))
-        hits.append((card, ("space", space["key"])))
         row_y += height
     if has_bar:
         _put_scrollbar(canvas, metrics,
@@ -1395,9 +1395,6 @@ def format_sidebar(spaces, tasks, width, rows, *, collapsed=False, scrolls=None,
                                                  session_mode)
             else:
                 sections[key] = _render_tasks(canvas, tasks, sub, scrolls.get(key, 0), hits)
-        toggle = hui.expanded_sidebar_toggle_rect(area)       # 1531-1553: "«" collapses
-        canvas.put(toggle.x, toggle.y, "«", fg=hui.OVERLAY0)
-        hits.append((toggle, ("toggle",)))
     return [canvas.row(y) for y in range(rows)], hits, sections
 
 
@@ -1499,7 +1496,7 @@ _HELP_ROWS = [
     ("[", "Copy mode: move, search, select, copy"), ("r", "Resize: h/l width, j/k height"),
     ("T / W", "Rename this tab / this space"),
     ("x / X", "Close the focused pane / the current tab"),
-    ("Q", "Close the current space (kills its panes)"),
+    ("q", "Close the current space (kills its panes)"),
     ("d", "Quit (everything shuts down)"), (PREFIX_NAME, f"Send a literal {PREFIX_NAME}"),
     ("esc", "Leave prefix mode"), ("Mouse", "Click focus, drag copy, 2× word"),
     ("", "esc, enter or ? closes this help"),
@@ -2253,20 +2250,11 @@ def launch():
                      if row["kind"] == "item" and row["action"] == action), None)
 
     def session_access(row):
-        """How a session row can be opened: attach, resume its instance, or history only."""
+        """An instance session can always be adopted writable; other saved history is read-only."""
         if row.get("control"):
             return "attach"
-        instance_id = row.get("instance_id")
-        path = row.get("path")
-        if instance_id and path:
-            try:
-                from misaka.core.platform import instances
-                current = instances.get(instance_id)
-                if current["session_file"] and (
-                        os.path.realpath(current["session_file"]) == os.path.realpath(path)):
-                    return "instance"
-            except (OSError, ValueError):
-                pass
+        if row.get("instance_id") and row.get("path"):
+            return "instance"
         return "read-only"
 
     def reopen_session(hit):
@@ -2308,7 +2296,8 @@ def launch():
         else:
             place = {"space": current["id"], "name": row["label"]}
         if access == "instance":
-            argv = [sys.executable, "-m", "misaka", "chat", "--instance", row["instance_id"]]
+            argv = [sys.executable, "-m", "misaka", "chat", "--instance", row["instance_id"],
+                    "--session", path]
         else:
             argv = [sys.executable, "-m", "misaka", "chat",
                     "--attach" if access == "attach" else "--read-only",
@@ -4115,10 +4104,6 @@ def launch():
             draw_sidebar()
         elif hit[0] == "sess-open":
             reopen_session(hit)
-        elif hit[0] == "toggle":                  # herdr toggle_sidebar: 26 columns <-> 4.
-            side["collapsed"] = not side["collapsed"]
-            side["w"] = SIDEBAR_COLLAPSED_W if side["collapsed"] else SIDEBAR_W
-            relayout()
         elif hit[0] == "sort":                    # herdr: click the header label to flip grouped / priority.
             side["sort"] = "priority" if side["sort"] == "grouped" else "grouped"
             draw_sidebar()
@@ -4519,7 +4504,7 @@ def launch():
             if close_tab():
                 exit_reason[0] = "closed_all"
                 return "quit"
-        elif text == "Q":
+        elif text == "q":
             if close_space():
                 exit_reason[0] = "closed_all"
                 return "quit"
