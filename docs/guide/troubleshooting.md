@@ -22,7 +22,7 @@ provider again.
 The SDK for that provider is missing. Reinstall with the `providers` extra:
 
 ```sh
-uv tool install --force "misaka[providers] @ git+https://github.com/Luciole-Studio/Misaka-Agent.git"
+uv tool install --force "misaka[providers] @ git+https://github.com/Rottenwooood/misaka.git"
 ```
 
 **The wizard says the test request failed.**

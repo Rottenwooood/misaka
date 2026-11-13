@@ -1,6 +1,5 @@
 <p align="center"><img src="assets/banner.jpg" alt="MISAKA — designed by Luciole Studio" width="100%"></p>
 
-> 本个人助手开发分支已接通实例配置与原生会话：Sister 跨卡复用上下文，Last Order 换会话读取当前状态，普通派活由 daemon 持有。当前格式不迁移。范围与隔离验收见 [第三阶段说明](docs/personal/stage-03-instances.md)。
 
 
 <h1 align="center">
@@ -47,7 +46,7 @@ the final report arrives in your project folder as a research article, every cit
 ## Quick start
 
 ```sh
-uv tool install "misaka[providers] @ git+https://github.com/Luciole-Studio/Misaka-Agent.git"
+uv tool install "misaka[providers] @ git+https://github.com/Rottenwooood/misaka.git"
 
 mkdir ~/Documents/my-research
 cd ~/Documents/my-research
@@ -62,7 +61,9 @@ ChatGPT or GitHub Copilot subscription. Claude accounts can also sign in, with t
 by Anthropic per token as extra usage. Install from this repository: the `misaka` package on PyPI
 is an unrelated project.
 
-Each GitHub release also has a prebuilt archive for those architectures. The archive includes
+This fork installs from source. The prebuilt archives below belong to upstream and do not contain this branch.
+
+Each upstream GitHub release also has a prebuilt archive for those architectures. The archive includes
 uv, git, ripgrep (`rg`), fd and poppler (`pdftotext`); running `misaka` puts them on `PATH` for
 that process. ocrmypdf, DjVuLibre and LibreOffice stay optional and are not in the archive.
 

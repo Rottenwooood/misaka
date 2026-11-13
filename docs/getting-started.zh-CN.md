@@ -25,7 +25,7 @@ OCR 那一行会装好英文、中文和日文，这是 MISAKA 默认识别扫�
 ## 2. 安装 MISAKA
 
 ```sh
-uv tool install "misaka[providers] @ git+https://github.com/Luciole-Studio/Misaka-Agent.git"
+uv tool install "misaka[providers] @ git+https://github.com/Rottenwooood/misaka.git"
 ```
 
 请从这个地址安装；PyPI 上叫 `misaka` 的包是另一个项目。

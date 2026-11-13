@@ -25,7 +25,7 @@ OCR の行では英語・中国語・日本語が入ります。MISAKA がスキ
 ## 2. MISAKA をインストールする
 
 ```sh
-uv tool install "misaka[providers] @ git+https://github.com/Luciole-Studio/Misaka-Agent.git"
+uv tool install "misaka[providers] @ git+https://github.com/Rottenwooood/misaka.git"
 ```
 
 必ずこのアドレスからインストールしてください。PyPI の `misaka` という名前のパッケージは別のプロジェクトです。

@@ -40,7 +40,7 @@ MISAKAでは、コーディネーターの**Last Order**と一緒に問いを分
 ## クイックスタート
 
 ```sh
-uv tool install "misaka[providers] @ git+https://github.com/Luciole-Studio/Misaka-Agent.git"
+uv tool install "misaka[providers] @ git+https://github.com/Rottenwooood/misaka.git"
 
 mkdir ~/Documents/my-research
 cd ~/Documents/my-research
@@ -50,7 +50,9 @@ misaka           # MISAKAを起動し、/researchと入力
 
 動作環境はmacOS、Linux、Windows（x86_64またはarm64）で、macOSでの実行を推奨します。[uv](https://docs.astral.sh/uv/)、git、[ripgrep](https://github.com/BurntSushi/ripgrep)、[fd](https://github.com/sharkdp/fd)、popplerのインストールと、モデルプロバイダ（APIキー、またはChatGPT・GitHub Copilotのサブスクリプション）が必要です。Claudeアカウントでもサインインでき、その利用分はAnthropicによりトークン単位の追加利用として課金されます。インストールは本リポジトリから行ってください。PyPIの`misaka`は無関係のパッケージです。
 
-各GitHubリリースには、同じアーキテクチャ向けのビルド済みアーカイブも付きます。中身はuv、git、ripgrep（`rg`）、fd、poppler（`pdftotext`）です。`misaka`を実行すると、そのプロセスのPATHにこれらのツールが入ります。ocrmypdf、DjVuLibre、LibreOfficeは任意のままで、アーカイブには含まれません。
+このフォークはソースからインストールします。以下のビルド済みアーカイブは上流のもので、このブランチは含まれません。
+
+各上流GitHubリリースには、同じアーキテクチャ向けのビルド済みアーカイブも付きます。中身はuv、git、ripgrep（`rg`）、fd、poppler（`pdftotext`）です。`misaka`を実行すると、そのプロセスのPATHにこれらのツールが入ります。ocrmypdf、DjVuLibre、LibreOfficeは任意のままで、アーカイブには含まれません。
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Luciole-Studio/Misaka-Agent/main/scripts/install.sh | sh

@@ -29,7 +29,7 @@ install it. On Windows, open a new terminal after `winget install` so it sees th
 ## 2. Install MISAKA
 
 ```sh
-uv tool install "misaka[providers] @ git+https://github.com/Luciole-Studio/Misaka-Agent.git"
+uv tool install "misaka[providers] @ git+https://github.com/Rottenwooood/misaka.git"
 ```
 
 Install from this address; the package called `misaka` on PyPI is a different project.

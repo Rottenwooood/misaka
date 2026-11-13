@@ -2,7 +2,7 @@
 """Render the real task-view cells to a PNG, for visual review without a terminal.
 
 Example:
-  scripts/render_task_view.py --home ~/.local/share/misaka-personal \
+  scripts/render_task_view.py --home ~/.local/share/misaka \
       --project ~/p-test --request perm-test --cols 140 --rows 44 \
       --out /tmp/task-view.png
 """

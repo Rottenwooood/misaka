@@ -40,7 +40,7 @@
 ## 快速开始
 
 ```sh
-uv tool install "misaka[providers] @ git+https://github.com/Luciole-Studio/Misaka-Agent.git"
+uv tool install "misaka[providers] @ git+https://github.com/Rottenwooood/misaka.git"
 
 mkdir ~/Documents/my-research
 cd ~/Documents/my-research
@@ -50,7 +50,9 @@ misaka           # 启动 MISAKA，输入 /research
 
 运行环境为 macOS、Linux 或 Windows（x86_64 或 arm64），推荐在 macOS 上运行。需预先安装 [uv](https://docs.astral.sh/uv/)、git、[ripgrep](https://github.com/BurntSushi/ripgrep)、[fd](https://github.com/sharkdp/fd) 与 poppler，并准备一个模型服务商：API 密钥，或 ChatGPT、GitHub Copilot 订阅。亦支持以 Claude 账号登录，相应用量由 Anthropic 按 token 另行计为额外用量。请从本仓库安装：PyPI 上的 `misaka` 为另一无关项目。
 
-每个 GitHub release 也附带上述架构的预编译包。包内包含 uv、git、ripgrep（`rg`）、fd 与 poppler（`pdftotext`）。运行 `misaka` 时，这些工具会进入该进程的 PATH。ocrmypdf、DjVuLibre 与 LibreOffice 仍为可选项，不在包内。
+本分支从源码安装；下面的预编译包属于上游，不包含本分支。
+
+每个上游 GitHub release 也附带上述架构的预编译包。包内包含 uv、git、ripgrep（`rg`）、fd 与 poppler（`pdftotext`）。运行 `misaka` 时，这些工具会进入该进程的 PATH。ocrmypdf、DjVuLibre 与 LibreOffice 仍为可选项，不在包内。
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Luciole-Studio/Misaka-Agent/main/scripts/install.sh | sh
