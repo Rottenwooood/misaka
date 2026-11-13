@@ -14,9 +14,12 @@ SISTER_TOOLS = {
                     "Owned sub-agent IDs/names are resolved before those names. "
                     "Ordinary messages do not create, start, complete or park a card."),
     "misaka_sister_view": "Read a registered Sister's introduction to choose a collaborator.",
-    "misaka_task": ("Read or save your work plans and start named ready cards explicitly. "
-                    "Saving a plan does not start work. Follow user instructions for plan presentation and interaction."),
-    "misaka_roster": "Manage templates and registered instances; a template revision leaves existing pins unchanged.",
+    "misaka_task": ("Read or save your work plans, start named ready cards, cancel or delete a request, "
+                    "review finished work, and read a card's declared result. Saving a plan does not start work."),
+    "misaka_roster": ("Manage templates, instances and their session state, stop an instance, edit its "
+                      "subscriptions, or delete instances and template revisions in bulk."),
+    "misaka_usage": ("Read token counts, priced cost and wall-clock time for a card, request, instance "
+                     "or the whole board; live_only lists what is running now."),
     "misaka_sister_message": ("Address an existing card by task ID and current generation to steer or continue its session. "
                               "Reply to a parked card's help request here, not through SendMessage; "
                               "observe the tool's confirmation requirement for completed tasks."),

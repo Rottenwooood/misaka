@@ -161,3 +161,89 @@ def test_posting_to_a_card_asks_the_waker(monkeypatch):
     target = {"to_addr": "worker", "to_task": CARD, "generation": 1, "to_session": None}
     assert messages.post(target, "go on", summary="go on", sender="lo") == "m-1"
     assert woken == [CARD]
+
+
+def test_cancelling_a_running_card_closes_its_lease_and_attempt():
+    from misaka.core.platform import tasks, work
+    s = Scenario()
+    try:
+        _seed(s)
+        with closing(tasks.connect(s.database)) as con:
+            work.update_plan(con, "req", 0, [{"id": CARD, "title": "One",
+                                              "instance_id": "worker", "body": BODY}])
+            with tasks.write_txn(con):
+                con.execute(
+                    "UPDATE tasks SET status='running',claim_lock='lock',claim_expires=?,"
+                    "worker_pid=123,current_run_id='tr_probe' WHERE id=?",
+                    (int(time.time()) + 60, CARD))
+                con.execute(
+                    "INSERT INTO task_runs(id,task_id,generation,attempt,phase,assignee,status,"
+                    "claim_lock,pid,workspace,started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    ("tr_probe", CARD, 1, 1, "worker", "sister", "running", "lock", 123,
+                     str(s.project), int(time.time())))
+            work.cancel_card(con, CARD)
+            row = tasks.get(con, CARD)
+            assert row["status"] == "stopped"
+            assert row["claim_lock"] is None and row["worker_pid"] is None
+            assert con.execute("SELECT status FROM task_runs WHERE id='tr_probe'").fetchone()[0] == "stopped"
+    finally:
+        s.close()
+
+
+def test_hard_cancel_detaches_a_parent_and_promotes_its_child():
+    from misaka.core.platform import tasks, work
+    s = Scenario()
+    try:
+        _seed(s)
+        with closing(tasks.connect(s.database)) as con:
+            work.update_plan(con, "req", 0, [
+                {"id": CARD, "title": "Parent", "instance_id": "worker", "body": BODY},
+                {"id": "t_a00002", "title": "Child", "instance_id": "worker", "body": BODY,
+                 "needs": [CARD]},
+            ])
+            assert tasks.get(con, "t_a00002")["status"] == "todo"
+            work.delete_card(con, CARD, allow_active=True, detach=True)
+            assert tasks.get(con, CARD) is None
+            assert tasks.get(con, "t_a00002")["status"] == "ready"
+    finally:
+        s.close()
+
+
+def test_rejecting_a_child_of_done_work_returns_it_to_ready():
+    from misaka.core.platform import tasks, work
+    s = Scenario()
+    try:
+        _seed(s)
+        with closing(tasks.connect(s.database)) as con:
+            work.update_plan(con, "req", 0, [
+                {"id": CARD, "title": "Parent", "instance_id": "worker", "body": BODY},
+                {"id": "t_a00002", "title": "Child", "instance_id": "worker", "body": BODY,
+                 "needs": [CARD]},
+            ])
+            with tasks.write_txn(con):
+                con.execute("UPDATE tasks SET status='done',completed_at=? WHERE id=?",
+                            (int(time.time()), CARD))
+                con.execute("UPDATE tasks SET status='done',completed_at=? WHERE id='t_a00002'",
+                            (int(time.time()),))
+            result = work.review_card(con, "t_a00002", "reject", "rework")
+            assert result["status"] == "ready"
+            assert tasks.dependency_state(con, "t_a00002")[0] == "ready"
+    finally:
+        s.close()
+
+
+def test_an_empty_include_returns_only_the_result_envelope():
+    from misaka.core.platform import tasks, work
+    s = Scenario()
+    try:
+        _seed(s)
+        with closing(tasks.connect(s.database)) as con:
+            work.update_plan(con, "req", 0, [{"id": CARD, "title": "One",
+                                              "instance_id": "worker", "body": BODY}])
+            with tasks.write_txn(con):
+                con.execute("UPDATE tasks SET status='done',completed_at=? WHERE id=?",
+                            (int(time.time()), CARD))
+            result = work.card_result(con, CARD, [])
+            assert set(result) == {"id", "status", "finished_at"}
+    finally:
+        s.close()

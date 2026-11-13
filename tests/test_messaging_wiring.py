@@ -81,11 +81,11 @@ def test_instance_subscriptions_are_stored_with_the_instance(tmp_path):
         ])
         from misaka.core.platform import tasks, work
         with closing(tasks.connect(s.database)) as con:
-            work.set_instance_subscriptions(
-                con, "lo", [{"source": "calendar", "type": "reminder", "target": None}])
+            work.instance_subscriptions(
+                con, "lo", "add", [{"source": "calendar", "type": "reminder"}])
             row = con.execute("SELECT subscriptions FROM instances WHERE id='lo'").fetchone()
         assert json.loads(row[0]) == [{"source": "calendar", "type": "reminder",
-                                       "target": None}]
+                                       "enabled": True}]
     finally:
         s.close()
 

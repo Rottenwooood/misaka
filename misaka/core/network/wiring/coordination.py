@@ -1,10 +1,11 @@
 """Instance-owned orchestration tools for ordinary work."""
+import asyncio
 import json
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from misaka.core.platform import tasks, toolkit, work
+from misaka.core.platform import instances, processes, tasks, toolkit, usage, work
 from misaka.core.platform.prompt_guard import untrusted
 from misaka.utils.redact import redact
 
@@ -74,20 +75,11 @@ class ReviewCard(Command):
 
 class CardResult(Command):
     action: Literal["result"]
-    card_id: CardId
+    card_id: CardId | None = None
+    request_id: str | None = Field(None, description="Return every card of this request.")
+    status: str | None = Field(None, description="With request_id: keep cards in this status.")
     include: list[Literal["summary", "artifacts", "uncertain", "error"]] = Field(
         default_factory=lambda: ["summary", "artifacts", "uncertain", "error"])
-
-
-class CardResults(Command):
-    action: Literal["results"]
-    request_id: str
-    status: str | None = None
-
-
-class CardArtifacts(Command):
-    action: Literal["artifacts"]
-    card_id: CardId
 
 
 class DispatchCard(Command):
@@ -102,12 +94,12 @@ class StartCards(Command):
 
 class TaskParams(Command):
     command: Annotated[ShowTask | SavePlan | StartCards | ResumeCards | CancelCards | DeleteRequest
-                       | ReviewCard | CardResult | CardResults | CardArtifacts,
-                       Field(discriminator="action")]
+                       | ReviewCard | CardResult, Field(discriminator="action")]
 
 
 class ShowRoster(Command):
     action: Literal["show"]
+    instance_id: str | None = None
 
 
 class SessionConfig(Command):
@@ -119,6 +111,10 @@ class SessionConfig(Command):
     skills: list[str] | None = Field(None, description="Skill names to load.")
     settings: dict[str, dict] | None = Field(
         None, description="Only mcpServers and web; model and thinking have their own fields.")
+    fs_scope: list[str] | None = Field(
+        None, description="Default paths cards of this instance may touch.")
+    forbidden_commands: list[str] | None = Field(
+        None, description="Default command patterns cards of this instance must not run.")
 
 
 class CreateTemplate(Command):
@@ -149,26 +145,45 @@ class CreateInstance(Command):
     label: str | None = None
 
 
-class SetSubscriptions(Command):
-    action: Literal["set_subscriptions"]
+class SubscriptionItem(Command):
+    source: str
+    type: str
+    enabled: bool | None = Field(None, description="Omit on add to enable; required for set_enabled.")
+
+
+class Subscriptions(Command):
+    action: Literal["subscriptions"]
     id: str
-    subscriptions: list[CardSubscription]
+    op: Literal["list", "add", "remove", "set_enabled"]
+    items: list[SubscriptionItem] | None = None
 
 
-class DeleteInstance(Command):
-    action: Literal["delete_instance"]
+class StopInstance(Command):
+    action: Literal["stop_instance"]
     id: str
+    mode: Literal["hibernate", "kill"]
 
 
-class DeleteTemplate(Command):
-    action: Literal["delete_template"]
-    id: str
-    revision: int | None = Field(None, ge=1, description="One revision; omit to delete the template.")
+class BulkDelete(Command):
+    action: Literal["bulk_delete"]
+    kind: Literal["instance", "template"]
+    ids: list[str] = Field(min_length=1)
+    revisions: list[int] | None = Field(
+        None, description="For kind=template: only these revisions; omit to delete the template.")
 
 
 class RosterParams(Command):
-    command: Annotated[ShowRoster | CreateTemplate | ReviseTemplate | CreateInstance | SetSubscriptions
-                       | DeleteInstance | DeleteTemplate, Field(discriminator="action")]
+    command: Annotated[ShowRoster | CreateTemplate | ReviseTemplate | CreateInstance | Subscriptions
+                       | StopInstance | BulkDelete, Field(discriminator="action")]
+
+
+class UsageParams(Command):
+    card_id: CardId | None = None
+    request_id: str | None = None
+    instance_id: str | None = None
+    since: int | None = Field(None, ge=0, description="Unix seconds; omit for all time.")
+    until: int | None = Field(None, ge=0, description="Unix seconds; omit for all time.")
+    live_only: bool = Field(False, description="Only cards running now.")
 
 
 def _command_schema(model):
@@ -207,8 +222,9 @@ def _data(label, value):
             "details": {}}
 
 
-def _roster_view(state):
-    """Latest node per template and the instances; nothing constant, nothing historical."""
+def _roster_view(con, instance_id=None):
+    """Latest node per template and the instances with their live session state."""
+    state = work.roster(con)
     latest = {}
     for node in state["templates"]:
         if node["id"] not in latest or node["revision"] > latest[node["id"]]["revision"]:
@@ -219,10 +235,15 @@ def _roster_view(state):
         if node.get("config"):
             row["config"] = node["config"]
         templates.append(row)
+    status = {row["id"]: row for row in work.instance_status(con, instance_id)}
     instances = []
     for item in state["instances"]:
+        if instance_id is not None and item["id"] != instance_id:
+            continue
         row = {key: item[key] for key in ("id", "label", "template_id", "template_revision")
                if item.get(key) is not None}
+        row["subscriptions"] = work.instance_specs(item["subscriptions"])
+        row.update(status.get(item["id"], {}))
         if item.get("retired"):
             row["retired"] = True
         instances.append(row)
@@ -235,21 +256,38 @@ def install(collector, runtime, connection, owner_id):
             raise ValueError("This tool requires a registered Last Order instance")
         return work.coordinator(con, owner_id)["id"]
 
+    def owned_card(con, owner, card_id):
+        row = tasks.get(con, card_id)
+        if row is not None:
+            work.owned_request(con, owner, row["request_id"])
+        return row
+
+    async def stop_card(card_id, ctx):
+        """True when no process is left, or there was none; False when a pane refused."""
+        try:
+            receipt = await runtime.stop(card_id, confirmed=True, context=ctx)
+        except Exception:  # noqa: BLE001 - no pane owns it; the board is the only place to stop it
+            return True
+        return bool(receipt.get("stopped") or receipt.get("missing"))
+
     async def cancel_cards(command, con, ctx):
+        owner = actor(con)
         results = []
         for card_id in command.cards:
-            row = tasks.get(con, card_id)
+            try:
+                row = owned_card(con, owner, card_id)
+            except ValueError as error:
+                results.append({"id": card_id, "status": "error", "reason": str(error)})
+                continue
             if row is None:
                 results.append({"id": card_id, "status": "not_found"})
                 continue
-            if row["status"] in ("running", "review"):
-                try:
-                    await runtime.stop(card_id, confirmed=True, context=ctx)
-                except Exception:  # noqa: BLE001, S110 - no pane owns it; the board still stops it
-                    pass
+            if row["status"] in ("running", "review") and not await stop_card(card_id, ctx):
+                results.append({"id": card_id, "status": "error", "reason": "stop_failed"})
+                continue
             try:
                 if command.hard:
-                    work.delete_card(con, card_id, allow_active=True)
+                    work.delete_card(con, card_id, allow_active=True, detach=True)
                     results.append({"id": card_id, "status": "deleted"})
                 else:
                     results.append(work.cancel_card(con, card_id))
@@ -258,21 +296,100 @@ def install(collector, runtime, connection, owner_id):
         return _data("cancelled", results)
 
     async def delete_request(command, con, ctx):
+        owner = actor(con)
+        try:
+            work.owned_request(con, owner, command.request_id)
+        except ValueError as error:
+            if con.execute("SELECT 1 FROM work_requests WHERE id=?",
+                           (command.request_id,)).fetchone() is None:
+                return _data("deleted", {"id": command.request_id, "status": "not_found",
+                                         "deleted_cards": 0})
+            return _data("deleted", {"id": command.request_id, "status": "error",
+                                     "reason": str(error), "deleted_cards": 0})
         if command.force:
             for row in con.execute("SELECT id,status FROM tasks WHERE request_id=?",
                                    (command.request_id,)).fetchall():
-                if row["status"] in ("running", "review"):
-                    try:
-                        await runtime.stop(row["id"], confirmed=True, context=ctx)
-                    except Exception:  # noqa: BLE001, S110 - deletion proceeds from the board
-                        pass
+                if row["status"] in ("running", "review") and not await stop_card(row["id"], ctx):
+                    return _data("deleted", {"id": command.request_id, "status": "blocked",
+                                             "reason": "stop_failed", "deleted_cards": 0})
         return _data("deleted", work.delete_request(con, command.request_id, force=command.force))
+
+    async def stop_instance(command, con):
+        item = work.instance(con, command.id)
+        cards = con.execute(
+            "SELECT id,status,worker_pid,worker_identity FROM tasks "
+            "WHERE instance_id=? AND status IN ('running','review') ORDER BY id",
+            (command.id,),
+        ).fetchall()
+        if command.mode == "hibernate":
+            if item["writer_pid"] and processes.identity_is_alive(
+                    item["writer_pid"], item["writer_identity"]):
+                try:
+                    await instances.control(command.id, "pause")
+                except Exception:  # noqa: BLE001, S110 - no control endpoint; cards still release
+                    pass
+            for row in cards:
+                tasks.back_to_ready(con, row["id"])
+        else:
+            seen = set()
+            targets = [(item["writer_pid"], item["writer_identity"])]
+            targets += [(row["worker_pid"], row["worker_identity"]) for row in cards]
+            for pid, identity in targets:
+                if pid and pid not in seen and processes.identity_is_alive(pid, identity):
+                    seen.add(pid)
+                    await asyncio.to_thread(processes.terminate, pid)
+            for row in cards:
+                tasks.block_task(con, row["id"], "transient", "instance_killed")
+            instances.forget_session(con, command.id)
+        status = work.instance_status(con, command.id)[0]
+        return _data("instance-stop", {
+            "id": command.id,
+            "session": status["session"],
+            "affected_cards": [row["id"] for row in cards],
+        })
+
+    def sync_subscriptions(instance_id, before_count, subscriptions):
+        from misaka.core.messaging import config as center_config
+        from misaka.core.messaging import registry
+        from misaka.core.messaging.sync import SubscriptionSync
+
+        client, url = center_config.center(), center_config.inbox_url()
+        if client is None or url is None:
+            return False
+        try:
+            registry.ensure_endpoint(client, instance_id, url)
+            enabled = [item for item in subscriptions if item["enabled"]]
+            SubscriptionSync(client, instance_id).apply(
+                instance_id, enabled, prefix="instance")
+            stale = [SubscriptionSync.name_for(instance_id, index, "instance")
+                     for index in range(len(enabled), before_count)]
+            if stale:
+                SubscriptionSync(client, instance_id).clear(stale)
+            return True
+        except Exception:  # noqa: BLE001 - a centre outage leaves the local record authoritative
+            return False
+
+    def subscription_view(con, command):
+        before = work.instance_specs(work.instance(con, command.id)["subscriptions"])
+        if command.op != "list" and not command.items:
+            raise ValueError("This subscription operation needs items")
+        if command.op == "set_enabled" and any(item.enabled is None for item in command.items or ()):
+            raise ValueError("set_enabled needs an explicit enabled flag on every item")
+        result = work.instance_subscriptions(
+            con, command.id, command.op,
+            [item.model_dump() for item in command.items or ()],
+        )
+        if command.op != "list":
+            result["synced"] = sync_subscriptions(
+                command.id, len(before), result["subscriptions"])
+        return result
 
     @toolkit.register_tool(
         collector, name="misaka_task", label="Coordinate work",
         description="Read or save your task plans, start named ready cards, resume a blocked card, "
-                    "or cancel a card (optionally deleting it). Saving does not start execution. "
-                    "Starting may consume model quota. Follow the user's instructions for presenting plans.",
+                    "cancel or delete a request, review finished work, or read a card's structured "
+                    "result. Saving does not start execution. Starting may consume model quota. "
+                    "Follow the user's instructions for presenting plans.",
         parameters=TaskParams, schema=_command_schema,
     )
     async def task(tool_call_id, params, signal, on_update, ctx):
@@ -283,19 +400,26 @@ def install(collector, runtime, connection, owner_id):
         if isinstance(command, DeleteRequest):
             return await delete_request(command, con, ctx)
         if isinstance(command, ReviewCard):
+            owner = actor(con)
+            owned_card(con, owner, command.card_id)
             return _data("review", work.review_card(con, command.card_id, command.verdict,
                                                     command.feedback))
         if isinstance(command, CardResult):
-            return _data("card-result", work.card_result(con, command.card_id, command.include))
-        if isinstance(command, CardResults):
-            rows = con.execute("SELECT id,status FROM tasks WHERE request_id=? ORDER BY id",
-                               (command.request_id,)).fetchall()
-            return _data("card-results", [
-                work.card_result(con, row["id"])
+            owner = actor(con)
+            if (command.card_id is None) == (command.request_id is None):
+                raise ValueError("Give card_id or request_id, not both")
+            if command.card_id is not None:
+                owned_card(con, owner, command.card_id)
+                return _data("card-result", [work.card_result(
+                    con, command.card_id, command.include)])
+            work.owned_request(con, owner, command.request_id)
+            rows = con.execute(
+                "SELECT id,status FROM tasks WHERE request_id=? ORDER BY id",
+                (command.request_id,)).fetchall()
+            return _data("card-result", [
+                work.card_result(con, row["id"], command.include)
                 for row in rows
                 if command.status is None or row["status"] == command.status])
-        if isinstance(command, CardArtifacts):
-            return _data("card-artifacts", work.card_artifacts(con, command.card_id))
         with tasks.write_txn(con):
             owner = actor(con)
             if isinstance(command, ShowTask):
@@ -333,6 +457,20 @@ def install(collector, runtime, connection, owner_id):
                 receipt = {"task_id": card_id, "status": "error", "error": str(error)}
             receipts.append({"id": card_id, "state": receipt.get("status")})
         return _data("launch-receipts", receipts)
+
+    @toolkit.register_tool(
+        collector, name="misaka_usage", label="Read usage",
+        description="Read token counts, priced cost and wall-clock time for one card, a request, "
+                    "an instance or the whole board; live_only lists what is running now.",
+        parameters=UsageParams,
+    )
+    async def usage_tool(tool_call_id, params, signal, on_update, ctx):
+        con = connection()
+        actor(con)
+        return _data("usage", usage.report(
+            con, card_id=params.card_id, request_id=params.request_id,
+            instance_id=params.instance_id, since=params.since, until=params.until,
+            live_only=params.live_only))
 
     @toolkit.register_tool(
         collector, name="misaka_context", label="Set history aside",
@@ -375,34 +513,35 @@ def install(collector, runtime, connection, owner_id):
 
     @toolkit.register_tool(
         collector, name="misaka_roster", label="Manage templates and instances",
-        description="Read the roster, create or revise templates, or register an instance pinned to a template revision. "
-                    "These operations do not launch models. A template revision does not change existing instances.",
+        description="Read the roster and each instance's session state; create or revise templates; "
+                    "register or stop an instance; manage its long-lived subscriptions; delete "
+                    "instances or template revisions in bulk. These operations do not launch models.",
         parameters=RosterParams, schema=_command_schema,
     )
     async def roster(tool_call_id, params, signal, on_update, ctx):
         con = connection()
         command = params.command
-        with tasks.write_txn(con):
-            actor(con)
-            if isinstance(command, ShowRoster):
-                return _data("roster", _roster_view(work.roster(con)))
-            if isinstance(command, DeleteInstance):
-                work.delete_instance(con, command.id)
-                return _data("roster", _roster_view(work.roster(con)))
-            if isinstance(command, DeleteTemplate):
-                work.delete_template(con, command.id, command.revision)
-                return _data("roster", _roster_view(work.roster(con)))
-            if isinstance(command, SetSubscriptions):
-                item = work.set_instance_subscriptions(
-                    con, command.id, [spec.model_dump() for spec in command.subscriptions])
-                return _data("instance-subscriptions", {
-                    "id": item["id"],
-                    "subscriptions": json.loads(item["subscriptions"] or "[]"),
-                })
-            operation = {CreateTemplate: "template.create", ReviseTemplate: "template.revise",
-                         CreateInstance: "instance.create"}[type(command)]
-            values = command.model_dump(exclude_none=True, exclude={"action"})
-            result, = work.apply(con, [{"op": operation, **values}])
-            return _data("roster-change", {key: result[key] for key in
-                                         ("id", "revision", "template_id", "template_revision", "role")
-                                         if key in result})
+        actor(con)
+        if isinstance(command, ShowRoster):
+            return _data("roster", _roster_view(con, command.instance_id))
+        if isinstance(command, Subscriptions):
+            return _data("instance-subscriptions", subscription_view(con, command))
+        if isinstance(command, StopInstance):
+            return await stop_instance(command, con)
+        if isinstance(command, BulkDelete):
+            if command.kind == "instance":
+                for instance_id in command.ids:
+                    status = work.instance_status(con, instance_id)
+                    if status and status[0]["session"] == "live":
+                        await stop_instance(StopInstance(
+                            action="stop_instance", id=instance_id, mode="hibernate"), con)
+            return _data("bulk-delete", work.bulk_delete(
+                con, command.kind, command.ids, command.revisions))
+        operation = {CreateTemplate: "template.create", ReviseTemplate: "template.revise",
+                     CreateInstance: "instance.create"}[type(command)]
+        values = command.model_dump(exclude_none=True, exclude={"action"})
+        result, = work.apply(con, [{"op": operation, **values}])
+        return _data("roster-change", {key: result[key] for key in
+                                     ("id", "revision", "template_id", "template_revision", "role",
+                                      "config")
+                                     if key in result})

@@ -193,7 +193,7 @@ def test_a_patch_equal_to_the_node_does_not_create_a_revision():
         s.close()
 
 
-def test_the_last_order_stops_a_card_and_the_process_is_named():
+def test_the_last_order_cancels_a_card_and_the_process_is_named():
     import asyncio
 
     from misaka.core.network.wiring import coordination
@@ -255,7 +255,126 @@ def test_the_template_config_names_every_field_it_accepts():
     arms = schema["properties"]["command"]["oneOf"]
     create = next(a for a in arms if a["properties"]["action"]["const"] == "create_template")
     config = create["properties"]["config"]
-    assert set(config["properties"]) == {"system", "model", "thinking", "tools", "skills", "settings"}
+    assert set(config["properties"]) == {"system", "model", "thinking", "tools", "skills",
+                                         "settings", "fs_scope", "forbidden_commands"}
     assert config["additionalProperties"] is False
     assert "max" in config["properties"]["thinking"]["anyOf"][0]["enum"]
     assert config["properties"]["tools"]["anyOf"][0]["items"]["type"] == "string"
+
+
+def test_a_refused_stop_leaves_the_card_running():
+    import asyncio
+
+    from misaka.core.network.wiring import coordination
+    from misaka.core.platform import tasks, work
+
+    s = Scenario()
+    tools = {}
+
+    class Harness:
+        def registerTool(self, definition):
+            tools[definition.name] = definition
+
+    class Runtime:
+        async def stop(self, card_id, *, confirmed, context):
+            return {"success": False, "stopped": False, "stale": True}
+
+    try:
+        s.apply([
+            {"op": "template.create", "id": "lo", "role": "last-order", "config": {}},
+            {"op": "instance.create", "id": "lo", "template_id": "lo", "template_revision": 1},
+            {"op": "template.create", "id": "sister", "role": "sister", "config": {}},
+            {"op": "instance.create", "id": "worker", "template_id": "sister", "template_revision": 1},
+            {"op": "request.create", "id": "req", "title": "R", "owner_id": "lo",
+             "workspace": str(s.project)},
+        ])
+        with closing(tasks.connect(s.database)) as con:
+            work.update_plan(con, "req", 0, [{"id": "t_a00001", "title": "One",
+                                              "instance_id": "worker", "body": BODY}])
+            with tasks.write_txn(con):
+                con.execute("UPDATE tasks SET status='running' WHERE id='t_a00001'")
+            coordination.install(Harness(), Runtime(), lambda: con, "lo")
+            result = asyncio.run(tools["misaka_task"].execute(
+                "call", {"command": {"action": "cancel", "cards": ["t_a00001"]}},
+                None, None, None))
+            assert '"reason": "stop_failed"' in result["content"][0]["text"]
+            assert tasks.get(con, "t_a00001")["status"] == "running"
+    finally:
+        s.close()
+
+
+def test_result_reads_one_card_and_a_whole_request():
+    import asyncio
+
+    from misaka.core.network.wiring import coordination
+    from misaka.core.platform import tasks, work
+
+    s = Scenario()
+    tools = {}
+
+    class Harness:
+        def registerTool(self, definition):
+            tools[definition.name] = definition
+
+    try:
+        s.apply([
+            {"op": "template.create", "id": "lo", "role": "last-order", "config": {}},
+            {"op": "instance.create", "id": "lo", "template_id": "lo", "template_revision": 1},
+            {"op": "template.create", "id": "sister", "role": "sister", "config": {}},
+            {"op": "instance.create", "id": "worker", "template_id": "sister", "template_revision": 1},
+            {"op": "request.create", "id": "req", "title": "R", "owner_id": "lo",
+             "workspace": str(s.project)},
+        ])
+        with closing(tasks.connect(s.database)) as con:
+            work.update_plan(con, "req", 0, [{"id": "t_a00001", "title": "One",
+                                              "instance_id": "worker", "body": BODY}])
+            coordination.install(Harness(), object(), lambda: con, "lo")
+            single = asyncio.run(tools["misaka_task"].execute(
+                "call", {"command": {"action": "result", "card_id": "t_a00001"}},
+                None, None, None))["content"][0]["text"]
+            assert '"id": "t_a00001"' in single and '"summary": null' in single
+            batch = asyncio.run(tools["misaka_task"].execute(
+                "call", {"command": {"action": "result", "request_id": "req"}},
+                None, None, None))["content"][0]["text"]
+            assert '"id": "t_a00001"' in batch
+    finally:
+        s.close()
+
+
+def test_the_usage_tool_is_registered_and_reads_a_card():
+    import asyncio
+    import json as jsonlib
+
+    from misaka.core.network.wiring import coordination
+    from misaka.core.platform import tasks, work
+
+    s = Scenario()
+    tools = {}
+
+    class Harness:
+        def registerTool(self, definition):
+            tools[definition.name] = definition
+
+    try:
+        s.apply([
+            {"op": "template.create", "id": "lo", "role": "last-order", "config": {}},
+            {"op": "instance.create", "id": "lo", "template_id": "lo", "template_revision": 1},
+            {"op": "template.create", "id": "sister", "role": "sister", "config": {}},
+            {"op": "instance.create", "id": "worker", "template_id": "sister", "template_revision": 1},
+            {"op": "request.create", "id": "req", "title": "R", "owner_id": "lo",
+             "workspace": str(s.project)},
+        ])
+        with closing(tasks.connect(s.database)) as con:
+            work.update_plan(con, "req", 0, [{"id": "t_a00001", "title": "One",
+                                              "instance_id": "worker", "body": BODY}])
+            con.execute(
+                "INSERT INTO events(task_id,kind,payload,generation,created_at) VALUES(?,?,?,?,?)",
+                ("t_a00001", "budget_usage",
+                 jsonlib.dumps({"totalTokens": 12, "provider": "p", "model": "m",
+                                "usage": {"input": 12, "output": 0}}), 1, 1))
+            coordination.install(Harness(), object(), lambda: con, "lo")
+            result = asyncio.run(tools["misaka_usage"].execute(
+                "call", {"card_id": "t_a00001"}, None, None, None))
+            assert '"total": 12' in result["content"][0]["text"]
+    finally:
+        s.close()

@@ -387,6 +387,11 @@ def connect(path: str) -> sqlite3.Connection:
         # Refuse another board format before journal mode or schema DDL can touch it.
         if con.execute("SELECT 1 FROM sqlite_master WHERE name='tasks' AND type='table'").fetchone():
             require_schema(con, "tasks", TASK_SCHEMA_VERSION, populated=True)
+            columns = {row[1] for row in con.execute("PRAGMA table_info(instances)")}
+            if "last_active_at" not in columns:
+                # Additive and nullable: an older board gains the column on its next open
+                # without changing any stored row, the same way the indexes above do.
+                con.execute("ALTER TABLE instances ADD COLUMN last_active_at INTEGER")
         con.execute("PRAGMA foreign_keys=ON")
         # journal_mode=WAL is a request, not a promise: a filesystem without the shared-memory and
         # locking primitives WAL needs (NFS, SMB, some container overlays) leaves SQLite in
@@ -476,6 +481,10 @@ def create_task(con, title, body="", *, request_id, instance_id, model=None, pri
     executor = work.instance(con, instance_id)
     if executor["role"] != "sister" or executor["retired"]:
         raise ValueError("A card needs a non-retired Sister instance")
+    if fs_scope is None:
+        fs_scope = executor["config"].get("fs_scope")
+    if forbidden_commands is None:
+        forbidden_commands = executor["config"].get("forbidden_commands")
     assignee = executor["template_id"]  # engine role routing; instance_id is execution identity
     reviewer = str(reviewer or "").strip() or None
     if reviewer == assignee:
@@ -1287,10 +1296,29 @@ def mark_stopped(con, task_id, generation=None, claim_lock=None):
         return cur.rowcount == 1
 
 
-
-
-
-
+@_serialized
+def cancel_task(con, task_id):
+    """Take a card off the board from any status and leave no live lease behind."""
+    row = get(con, task_id)
+    if row is None:
+        return None
+    if row["status"] == "stopped":
+        return "stopped"
+    now = int(time.time())
+    with _write_txn(con):
+        cur = con.execute(
+            "UPDATE tasks SET status='stopped',completed_at=?,"
+            "claim_lock=NULL,claim_expires=NULL,worker_pid=NULL,worker_identity=NULL,"
+            "review_lock=NULL,review_expires=NULL,review_pid=NULL,review_identity=NULL,"
+            "block_kind=NULL,block_reason=NULL,block_fingerprint=NULL,block_recurrence=0,"
+            "blocked_at=NULL,next_attempt_at=NULL WHERE id=?",
+            (now, task_id),
+        )
+        if cur.rowcount != 1:
+            return None
+        _finish_current_run(con, task_id, "stopped")
+        add_event(con, task_id, "cancelled", {"previous_status": row["status"]})
+        return "stopped"
 
 
 @_serialized
@@ -1710,7 +1738,7 @@ def block_task(
         clauses.extend(["status='running'", "claim_lock=?", "claim_expires>=?"])
         values.extend([claim_lock, int(time.time())])
     else:
-        clauses.append("status IN ('todo','ready','running','blocked')")
+        clauses.append("status IN ('todo','ready','running','blocked','review')")
     now = int(time.time())
     with _write_txn(con):
         cur = con.execute(

@@ -7,11 +7,14 @@ with an expected revision; card and dependency readers use the same committed da
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from contextlib import nullcontext
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS templates (
@@ -37,6 +40,7 @@ CREATE TABLE IF NOT EXISTS instances (
  writer_pid INTEGER,
  writer_identity TEXT,
  writer_token TEXT,
+ last_active_at INTEGER,
  FOREIGN KEY(template_id,template_revision) REFERENCES templates(id,revision)
 );
 CREATE TABLE IF NOT EXISTS instance_session_archive (
@@ -98,7 +102,7 @@ def _subscription_specs(value):
     if value is None:
         return []
     if not isinstance(value, list):
-        raise ValueError("subscriptions must be a list")  # noqa: TRY004 - a plan field, judged with the rest of the plan
+        raise TypeError("subscriptions must be a list")
     specs = []
     for item in value:
         if not isinstance(item, dict) or set(item) - {"source", "type", "target"}:
@@ -138,6 +142,112 @@ def instance(con, instance_id):
         from misaka.config import home
         data["session_file"] = str(home.from_stored(data["session_file"]))
     return data
+
+
+def instance_status(con, instance_id=None):
+    """Each instance's session state: running a card, idle, or never started."""
+    from misaka.core.platform import processes
+
+    rows = con.execute(
+        "SELECT i.id,i.session_file,i.agent_id,i.writer_pid,i.writer_identity,"
+        "i.last_active_at FROM instances i WHERE (? IS NULL OR i.id=?) ORDER BY i.id",
+        (instance_id, instance_id),
+    ).fetchall()
+    result = []
+    for row in rows:
+        running = con.execute(
+            "SELECT id FROM tasks WHERE instance_id=? AND status IN ('running','review') "
+            "ORDER BY started_at DESC, id LIMIT 1",
+            (row["id"],),
+        ).fetchone()
+        pid = row["writer_pid"] if processes.identity_is_alive(
+            row["writer_pid"], row["writer_identity"]) else None
+        session = "live" if running else (
+            "idle" if (row["session_file"] or row["agent_id"] or row["writer_pid"]) else "none")
+        result.append({
+            "id": row["id"],
+            "session": session,
+            "pid": pid,
+            "running_card": running["id"] if running else None,
+            "last_active_at": row["last_active_at"],
+        })
+    return result
+
+
+def instance_specs(value):
+    """Instance subscriptions: one (source, type) pair each, with an enabled flag."""
+    if isinstance(value, str):
+        value = json.loads(value or "[]")
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise TypeError("subscriptions must be a list")
+    unique = {}
+    for item in value:
+        if not isinstance(item, dict) or set(item) - {"source", "type", "enabled", "target"}:
+            raise ValueError("Each subscription takes source, type and an optional enabled flag")
+        source = _text(item.get("source"), "subscription source")
+        kind = _text(item.get("type"), "subscription type")
+        enabled = item.get("enabled")
+        if enabled is None:
+            enabled = True
+        if type(enabled) is not bool:
+            raise ValueError("enabled must be boolean")
+        unique[(source, kind)] = {"source": source, "type": kind, "enabled": enabled}
+    return [unique[key] for key in sorted(unique)]
+
+
+def instance_subscriptions(con, instance_id, operation, items=None):
+    """List, add, remove or enable instance subscriptions; the caller syncs the centre."""
+    item = instance(con, instance_id)
+    current = instance_specs(item["subscriptions"])
+    by_key = {(entry["source"], entry["type"]): entry for entry in current}
+    changed = False
+    failed = []
+    if operation == "list":
+        return {"id": instance_id, "subscriptions": current, "failed": failed}
+    if operation in ("add", "set_enabled"):
+        for raw in items or ():
+            entry = instance_specs([raw])
+            if not entry:
+                continue
+            spec = entry[0]
+            key = (spec["source"], spec["type"])
+            if operation == "add":
+                if key in by_key:
+                    if raw.get("enabled") is not None:
+                        by_key[key]["enabled"] = spec["enabled"]
+                        changed = True
+                else:
+                    by_key[key] = spec
+                    changed = True
+            elif key in by_key:
+                by_key[key]["enabled"] = spec["enabled"]
+                changed = True
+            else:
+                failed.append({"source": spec["source"], "type": spec["type"],
+                               "reason": "not_found"})
+    elif operation == "remove":
+        for raw in items or ():
+            entry = instance_specs([raw])
+            if not entry:
+                continue
+            key = (entry[0]["source"], entry[0]["type"])
+            if key in by_key:
+                del by_key[key]
+                changed = True
+            else:
+                failed.append({"source": key[0], "type": key[1], "reason": "not_found"})
+    else:
+        raise ValueError(f"Unknown subscription operation: {operation}")
+    current = [by_key[key] for key in sorted(by_key)]
+    if changed:
+        from misaka.core.platform import tasks
+
+        with tasks.write_txn(con):
+            con.execute("UPDATE instances SET subscriptions=? WHERE id=?",
+                        (json.dumps(current, ensure_ascii=False), instance_id))
+    return {"id": instance_id, "subscriptions": current, "failed": failed}
 
 
 def derive_node(con, instance_id, patch):
@@ -186,17 +296,6 @@ def tag_experience(con, card_id, label=None):
             (card_id, row["instance_id"], text, int(time.time())),
         )
     return {"card_id": card_id, "instance_id": row["instance_id"], "label": text}
-
-
-def set_instance_subscriptions(con, instance_id, specs):
-    """Replace an instance's long-lived subscriptions; the centre is told by the caller."""
-    from misaka.core.platform import tasks
-
-    instance(con, instance_id)
-    with tasks.write_txn(con):
-        con.execute("UPDATE instances SET subscriptions=? WHERE id=?",
-                    (json.dumps(_subscription_specs(specs), ensure_ascii=False), instance_id))
-    return instance(con, instance_id)
 
 
 def request(con, request_id):
@@ -728,44 +827,108 @@ def delete_template(con, template_id, revision=None):
     con.commit()
 
 
+def bulk_delete(con, kind, ids, revisions=None):
+    """Delete or retire many owners; one failure does not stop the rest."""
+    deleted, retired, failed = [], [], []
+    for item_id in ids:
+        try:
+            if kind == "instance":
+                instance(con, item_id)
+                if con.execute("SELECT 1 FROM tasks WHERE instance_id=? LIMIT 1",
+                               (item_id,)).fetchone():
+                    if con.execute(
+                        "SELECT 1 FROM tasks WHERE instance_id=? AND status IN ('running','review')",
+                        (item_id,),
+                    ).fetchone():
+                        raise ValueError("has_active_cards")
+                    con.execute("UPDATE instances SET retired=1 WHERE id=?", (item_id,))
+                    con.commit()
+                    retired.append(item_id)
+                else:
+                    delete_instance(con, item_id)
+                    deleted.append(item_id)
+            elif kind == "template":
+                for revision in revisions or [None]:
+                    label = item_id if revision is None else f"{item_id}:{revision}"
+                    try:
+                        delete_template(con, item_id, revision)
+                        deleted.append(label)
+                    except ValueError as error:
+                        reason = str(error)
+                        if "pinned" in reason or "derived" in reason:
+                            reason = "in_use"
+                        failed.append({"id": label, "reason": reason})
+            else:
+                raise ValueError(f"Unknown bulk_delete kind: {kind}")
+        except ValueError as error:
+            reason = str(error)
+            if "pinned" in reason or "derived" in reason:
+                reason = "in_use"
+            failed.append({"id": item_id, "reason": reason})
+    return {"deleted": deleted, "retired": retired, "failed": failed}
+
+
 def cancel_card(con, card_id):
     """Take a card off the board without deleting it; any status may be cancelled."""
     from misaka.core.platform import tasks
 
-    row = tasks.get(con, card_id)
-    if row is None:
+    status = tasks.cancel_task(con, card_id)
+    if status is None:
         raise ValueError(f"Card not found: {card_id}")
-    if row["status"] == "stopped":
-        return {"id": card_id, "status": "stopped"}
-    with tasks.write_txn(con):
-        con.execute("UPDATE tasks SET status='stopped',completed_at=? WHERE id=?",
-                    (int(time.time()), card_id))
-        tasks.add_event(con, card_id, "cancelled", {"previous_status": row["status"]})
-    return {"id": card_id, "status": "stopped"}
+    return {"id": card_id, "status": status}
 
 
-def delete_card(con, card_id, *, allow_active=False):
-    """Remove a card's rows and its file mirror; a card others depend on is refused."""
+def _drop_card_subscriptions(card_id, specs):
+    """Best effort: stop the centre delivering a card that is gone."""
+    if not specs:
+        return
+    try:
+        from misaka.core.messaging import config as center_config
+        from misaka.core.messaging.sync import SubscriptionSync
+
+        client = center_config.center()
+        if client is None:
+            return
+        names = [SubscriptionSync.name_for(card_id, index) for index in range(len(specs))]
+        SubscriptionSync(client, "").clear(names)
+    except Exception:
+        logger.warning("Could not drop subscriptions for %s", card_id, exc_info=True)
+
+
+def delete_card(con, card_id, *, allow_active=False, detach=False):
+    """Remove a card's rows and its file mirror.
+
+    ``detach`` lets a hard cancel remove a card others depended on: the edges are
+    withdrawn first and a child that is now runnable is promoted.
+    """
     from misaka.core.platform import cards as card_files
     from misaka.core.platform import tasks
 
     row = tasks.get(con, card_id)
     if row is None:
         raise ValueError(f"Card not found: {card_id}")
-    if tasks._children_of(con, card_id):
+    if tasks._children_of(con, card_id) and not detach:
         raise ValueError(f"Card {card_id} still has dependents; edit the plan before deleting it")
+    children = tasks._children_of(con, card_id)
+    if detach and children:
+        with tasks.write_txn(con):
+            con.execute("DELETE FROM task_dependencies WHERE parent_id=?", (card_id,))
     workspace = row["workspace"]
+    specs = json.loads(row["subscriptions"] or "[]")
     ok, message = tasks.delete_task(con, card_id, allow_active=allow_active)
     if not ok:
         raise ValueError(message)
     import shutil
-    from pathlib import Path
     shutil.rmtree(card_files.attachment_dir(workspace, card_id), ignore_errors=True)
     Path(card_files.card_path(workspace, card_id)).unlink(missing_ok=True)
+    _drop_card_subscriptions(card_id, specs)
+    for child in children:
+        tasks.promote_task(con, child)
 
 
 def delete_request(con, request_id, *, force=False):
-    """Delete a request and its cards; active cards refuse unless ``force``."""
+    """Delete a request and its cards atomically; active cards refuse unless ``force``."""
+    from misaka.core.platform import cards as card_files
     from misaka.core.platform import tasks
 
     request = con.execute("SELECT id FROM work_requests WHERE id=?", (request_id,)).fetchone()
@@ -779,20 +942,31 @@ def delete_request(con, request_id, *, force=False):
         return {"id": request_id, "status": "blocked", "reason": "has_active_cards",
                 "deleted_cards": 0}
     remaining = [row["id"] for row in rows]
-    deleted = 0
-    while remaining:
-        progress = False
-        for card_id in list(remaining):
-            if not tasks._children_of(con, card_id):
-                delete_card(con, card_id, allow_active=True)
+    deleted_rows = []
+    with tasks.write_txn(con):
+        while remaining:
+            progress = False
+            for card_id in list(remaining):
+                if tasks._children_of(con, card_id):
+                    continue
+                row = tasks.get(con, card_id)
+                ok, message = tasks.delete_task(con, card_id, allow_active=True)
+                if not ok:
+                    raise ValueError(message)
+                deleted_rows.append((card_id, row["workspace"],
+                                     json.loads(row["subscriptions"] or "[]")))
                 remaining.remove(card_id)
-                deleted += 1
                 progress = True
-        if not progress:
-            raise ValueError("Card graph is cyclic")
-    con.execute("DELETE FROM work_requests WHERE id=?", (request_id,))
-    con.commit()
-    return {"id": request_id, "status": "deleted", "deleted_cards": deleted}
+            if not progress:
+                raise ValueError("Card graph is cyclic")
+        con.execute("DELETE FROM work_requests WHERE id=?", (request_id,))
+    for card_id, workspace, specs in deleted_rows:
+        import shutil
+
+        shutil.rmtree(card_files.attachment_dir(workspace, card_id), ignore_errors=True)
+        Path(card_files.card_path(workspace, card_id)).unlink(missing_ok=True)
+        _drop_card_subscriptions(card_id, specs)
+    return {"id": request_id, "status": "deleted", "deleted_cards": len(deleted_rows)}
 
 
 def review_card(con, card_id, verdict, feedback=None):
@@ -805,6 +979,8 @@ def review_card(con, card_id, verdict, feedback=None):
     if row["status"] not in ("done", "blocked"):
         raise ValueError(f"Card {card_id} is {row['status']}; only a done or blocked card can be reviewed")
     feedback = str(feedback or "").strip()
+    if verdict == "reject" and row["status"] != "done":
+        raise ValueError(f"Card {card_id} is {row['status']}; only done work can be sent back")
     if verdict == "reject" and not feedback:
         raise ValueError("Rejecting a card requires feedback")
     with tasks.write_txn(con):
@@ -812,16 +988,19 @@ def review_card(con, card_id, verdict, feedback=None):
             if row["status"] == "blocked":
                 con.execute(
                     "UPDATE tasks SET status='done',completed_at=?,block_kind=NULL,block_reason=NULL,"
-                    "blocked_at=NULL,claim_lock=NULL,worker_pid=NULL,worker_identity=NULL WHERE id=?",
+                    "block_fingerprint=NULL,block_recurrence=0,blocked_at=NULL,claim_lock=NULL,"
+                    "worker_pid=NULL,worker_identity=NULL WHERE id=?",
                     (int(time.time()), card_id))
                 tasks.promote_dependents(con, card_id)
             tasks.add_event(con, card_id, "review_accepted", {"feedback": feedback[:4000]})
             status = "done"
         else:
-            status = "todo" if tasks.parent_ids(con, card_id) else "ready"
+            state, _parents = tasks.dependency_state(con, card_id)
+            status = "ready" if state == "ready" else "todo"
             con.execute(
                 "UPDATE tasks SET status=?,generation=generation+1,review_feedback=?,completed_at=NULL,"
-                "block_kind=NULL,block_reason=NULL,blocked_at=NULL,claim_lock=NULL,worker_pid=NULL,"
+                "block_kind=NULL,block_reason=NULL,block_fingerprint=NULL,block_recurrence=0,"
+                "blocked_at=NULL,claim_lock=NULL,worker_pid=NULL,"
                 "worker_identity=NULL WHERE id=?",
                 (status, feedback[:4000], card_id))
             tasks.add_event(con, card_id, "review_rejected", {"feedback": feedback[:4000]})
@@ -851,7 +1030,8 @@ def card_result(con, card_id, include=None):
     row = tasks.get(con, card_id)
     if row is None:
         raise ValueError(f"Card not found: {card_id}")
-    keys = set(include or ("summary", "artifacts", "uncertain", "error"))
+    keys = ({"summary", "artifacts", "uncertain", "error"}
+            if include is None else set(include))
     submitted = _submission(con, card_id, int(row["generation"])) if row["status"] in ("done", "blocked") else {}
     result = {"id": card_id, "status": row["status"]}
     if "summary" in keys:

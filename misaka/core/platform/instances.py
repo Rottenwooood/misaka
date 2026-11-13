@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 import os
 import secrets
 import time
@@ -20,15 +21,18 @@ from misaka.config import home
 from misaka.core.platform import processes, tasks, work
 
 _CURRENT = contextvars.ContextVar("instance_writer", default=None)
-CONFIG_KEYS = frozenset({"system", "model", "thinking", "tools", "skills", "settings"})
+logger = logging.getLogger(__name__)
+_LAST_TOUCH: dict[str, float] = {}
+CONFIG_KEYS = frozenset({"system", "model", "thinking", "tools", "skills", "settings",
+                         "fs_scope", "forbidden_commands"})
 
 # What a role starts with when its template does not name a tool list. Last Order coordinates:
 # management and messages, no file or command tools. A template may list any tool its role
 # provides, so a person who wants a Last Order that reads files can say so on the node.
 # A Sister's entry is None: every tool its role provides.
 DEFAULT_TOOLS = {
-    "last-order": ("misaka_task", "misaka_roster", "misaka_context", "misaka_skill",
-                   "SendMessage", "misaka_sister_peek"),
+    "last-order": ("misaka_task", "misaka_roster", "misaka_usage", "misaka_context",
+                   "misaka_skill", "SendMessage", "misaka_sister_peek"),
 }
 
 
@@ -56,6 +60,11 @@ def validate_config(value):
             not isinstance(item, str) or not item.strip() for item in value[key]
         ) or len(set(value[key])) != len(value[key])):
             raise ValueError(f"{key} must be a list of unique nonempty names")
+    for key in ("fs_scope", "forbidden_commands"):
+        if key in value and (not isinstance(value[key], list) or any(
+            not isinstance(item, str) or not item.strip() for item in value[key]
+        ) or len(set(value[key])) != len(value[key])):
+            raise ValueError(f"{key} must be a list of unique nonempty strings")
     if "settings" in value:
         from misaka.core.settings_manager import ROLE_KEYS
         if not isinstance(value["settings"], dict) or set(value["settings"]) - (ROLE_KEYS - {
@@ -165,6 +174,34 @@ def new_session(con, instance_id, expected_epoch):
         return work.instance(con, instance_id)
     finally:
         lock.release()
+
+
+def forget_session(con, instance_id):
+    """Close an instance's session without deleting the instance; the transcript is archived."""
+    with tasks.write_txn(con):
+        item = work.instance(con, instance_id)
+        if item["session_file"]:
+            _archive(con, item)
+        con.execute(
+            "UPDATE instances SET writer_pid=NULL,writer_identity=NULL,writer_token=NULL,"
+            "session_file=NULL,agent_id=NULL WHERE id=?",
+            (instance_id,),
+        )
+    return work.instance(con, instance_id)
+
+
+def touch(instance_id, *, force=False):
+    """Record a live session's last tool boundary; a throttled, best-effort stamp."""
+    now = time.time()
+    if not force and now - _LAST_TOUCH.get(instance_id, 0.0) < 2.0:
+        return
+    _LAST_TOUCH[instance_id] = now
+    try:
+        with closing(tasks.connect(str(home.path("db")))) as con, tasks.write_txn(con):
+            con.execute("UPDATE instances SET last_active_at=? WHERE id=?",
+                        (int(now), instance_id))
+    except Exception:
+        logger.debug("Could not stamp activity for %s", instance_id, exc_info=True)
 
 
 class Writer:

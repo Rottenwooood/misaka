@@ -24,6 +24,7 @@ class InstancePart:
         item = instances.get(self.spec.instance_id)
         config = item["config"]
         available = {t.name for t in self.session.getAllTools()}
+        instances.touch(self.spec.instance_id, force=True)
         if "tools" in config:
             if missing := set(config["tools"]) - available:
                 raise ValueError(f"Unknown configured tools: {sorted(missing)}")
@@ -40,6 +41,10 @@ class InstancePart:
                 self.session.setActiveToolsByName(defaults)
         self._sync_centre(item)
 
+    async def tool_call(self, _event, _ctx=None):
+        """A tool boundary is the instance's most recent sign of life."""
+        instances.touch(self.spec.instance_id)
+
     def _sync_centre(self, item):
         """Declare this instance and its own subscriptions; a centre outage is not fatal."""
         from misaka.core.messaging import config, registry
@@ -51,7 +56,8 @@ class InstancePart:
             return
         try:
             registry.ensure_endpoint(client, item["id"], url)
-            specs = json.loads(item["subscriptions"] or "[]")
+            specs = [entry for entry in json.loads(item["subscriptions"] or "[]")
+                     if entry.get("enabled", True)]
             if specs:
                 SubscriptionSync(client, item["id"]).apply(item["id"], specs, prefix="instance")
         except Exception:
