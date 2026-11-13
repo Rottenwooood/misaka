@@ -148,3 +148,21 @@ def test_a_card_that_never_ran_reports_zero():
             assert report["model_calls"] == 0 and report["attempts"] == 0
     finally:
         s.close()
+
+
+def test_an_unknown_identifier_is_an_error_not_an_empty_report():
+    import pytest
+
+    from misaka.core.platform import tasks, usage
+    s = Scenario()
+    try:
+        _seed(s)
+        with closing(tasks.connect(s.database)) as con:
+            with pytest.raises(ValueError, match="Card not found: t_abcdef"):
+                usage.report(con, card_id="t_abcdef")
+            with pytest.raises(ValueError, match="Work request not found: r_missing"):
+                usage.report(con, request_id="r_missing")
+            with pytest.raises(ValueError, match="Instance not found: ghost"):
+                usage.report(con, instance_id="ghost")
+    finally:
+        s.close()

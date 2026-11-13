@@ -163,6 +163,15 @@ def _cards(con, *, card_id=None, request_id=None, instance_id=None):
 
 def report(con, *, card_id=None, request_id=None, instance_id=None, live_only=False):
     """One shape, filtered by the caller: a card, a request, an instance or the board."""
+    if card_id is not None and con.execute(
+            "SELECT 1 FROM card_state WHERE id=?", (card_id,)).fetchone() is None:
+        raise ValueError(f"Card not found: {card_id}")
+    if request_id is not None and con.execute(
+            "SELECT 1 FROM work_requests WHERE id=?", (request_id,)).fetchone() is None:
+        raise ValueError(f"Work request not found: {request_id}")
+    if instance_id is not None and con.execute(
+            "SELECT 1 FROM instances WHERE id=?", (instance_id,)).fetchone() is None:
+        raise ValueError(f"Instance not found: {instance_id}")
     registry = _registry()
     if live_only:
         sql = "SELECT * FROM card_state WHERE status='running'"
@@ -194,8 +203,6 @@ def report(con, *, card_id=None, request_id=None, instance_id=None, live_only=Fa
     rows = _cards(con, card_id=card_id, request_id=request_id, instance_id=instance_id)
     parts = [{"id": row["id"], **_card_usage(con, row, registry)} for row in rows]
     if card_id is not None:
-        if not parts:
-            return None
         part = parts[0]
         return {"card_id": part["id"], **{key: part[key] for key in (
             "model", "tokens", "cost", "wall_time_s", "model_calls",
