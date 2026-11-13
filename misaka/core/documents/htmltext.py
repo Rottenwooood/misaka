@@ -55,6 +55,11 @@ class Readable(HTMLParser):
     to guess the URL of whatever it wants to read next.
     """
 
+    # <title> is RCDATA: its content is text, including angle brackets that do not form a
+    # tag. Python 3.13's HTMLParser drops such text unless the element is declared CDATA;
+    # keeping the title here preserves the page's own bytes for the fence to defang.
+    CDATA_CONTENT_ELEMENTS = (*HTMLParser.CDATA_CONTENT_ELEMENTS, "title")
+
     def __init__(self, base_url: str = "", images: list | None = None) -> None:
         super().__init__(convert_charrefs=True)
         # Given a list, an <img> is written where it stands as ``![alt]`` (``![image N]`` with no
