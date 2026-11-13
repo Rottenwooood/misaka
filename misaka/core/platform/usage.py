@@ -56,40 +56,30 @@ def _price(registry, provider, model):
     return getattr(found, "cost", None) if found is not None else None
 
 
-def _event_rows(con, task_id, since, until, generation=None):
+def _event_rows(con, task_id, generation=None):
     sql = "SELECT payload,created_at FROM events WHERE task_id=? AND kind='budget_usage'"
     params = [task_id]
     if generation is not None:
         sql += " AND generation=?"
         params.append(int(generation))
-    if since is not None:
-        sql += " AND created_at>=?"
-        params.append(int(since))
-    if until is not None:
-        sql += " AND created_at<=?"
-        params.append(int(until))
     return con.execute(sql + " ORDER BY id", params).fetchall()
 
 
-def _run_rows(con, task_id, since, until):
-    sql = "SELECT started_at,completed_at,status,failure_kind FROM task_runs WHERE task_id=?"
-    params = [task_id]
-    if since is not None:
-        sql += " AND started_at>=?"
-        params.append(int(since))
-    if until is not None:
-        sql += " AND started_at<=?"
-        params.append(int(until))
-    return con.execute(sql + " ORDER BY started_at,attempt", params).fetchall()
+def _run_rows(con, task_id):
+    return con.execute(
+        "SELECT started_at,completed_at,status,failure_kind FROM task_runs "
+        "WHERE task_id=? ORDER BY started_at,attempt",
+        (task_id,),
+    ).fetchall()
 
 
-def _card_usage(con, row, registry, since, until, generation=None):
+def _card_usage(con, row, registry, generation=None):
     tokens = {"in": 0, "out": 0, "total": 0}
     amount = 0.0
     priced = True
     model = None
     calls = 0
-    events = _event_rows(con, row["id"], since, until, generation)
+    events = _event_rows(con, row["id"], generation)
     for event in events:
         try:
             payload = json.loads(event["payload"] or "{}")
@@ -111,7 +101,7 @@ def _card_usage(con, row, registry, since, until, generation=None):
         else:
             amount += (tin * cost.input + tout * cost.output
                        + tread * cost.cacheRead + twrite * cost.cacheWrite) / _MILLION
-    runs = _run_rows(con, row["id"], since, until)
+    runs = _run_rows(con, row["id"])
     now = int(time.time())
     wall = sum(max(0, int(run["completed_at"] or now) - int(run["started_at"])) for run in runs)
     failures = sum(1 for run in runs if run["failure_kind"])
@@ -156,7 +146,7 @@ def _summary(parts):
     }
 
 
-def _cards(con, *, card_id=None, request_id=None, instance_id=None, since=None, until=None):
+def _cards(con, *, card_id=None, request_id=None, instance_id=None):
     sql = "SELECT * FROM card_state WHERE 1=1"
     params = []
     if card_id is not None:
@@ -168,17 +158,10 @@ def _cards(con, *, card_id=None, request_id=None, instance_id=None, since=None, 
     if instance_id is not None:
         sql += " AND instance_id=?"
         params.append(instance_id)
-    if since is not None:
-        sql += " AND created_at>=?"
-        params.append(int(since))
-    if until is not None:
-        sql += " AND created_at<=?"
-        params.append(int(until))
     return con.execute(sql + " ORDER BY id", params).fetchall()
 
 
-def report(con, *, card_id=None, request_id=None, instance_id=None,
-           since=None, until=None, live_only=False):
+def report(con, *, card_id=None, request_id=None, instance_id=None, live_only=False):
     """One shape, filtered by the caller: a card, a request, an instance or the board."""
     registry = _registry()
     if live_only:
@@ -193,7 +176,7 @@ def report(con, *, card_id=None, request_id=None, instance_id=None,
         now = int(time.time())
         live = []
         for row in rows:
-            usage = _card_usage(con, row, registry, None, None, int(row["generation"]))
+            usage = _card_usage(con, row, registry, int(row["generation"]))
             leased = con.execute(
                 "SELECT COALESCE(SUM(tokens),0) FROM budget_reservations "
                 "WHERE task_id=? AND expires_at>=?",
@@ -208,10 +191,8 @@ def report(con, *, card_id=None, request_id=None, instance_id=None,
                 "cost_so_far": usage["cost"],
             })
         return live
-    rows = _cards(con, card_id=card_id, request_id=request_id,
-                  instance_id=instance_id, since=since, until=until)
-    parts = [{"id": row["id"], **_card_usage(con, row, registry, since, until)}
-             for row in rows]
+    rows = _cards(con, card_id=card_id, request_id=request_id, instance_id=instance_id)
+    parts = [{"id": row["id"], **_card_usage(con, row, registry)} for row in rows]
     if card_id is not None:
         if not parts:
             return None

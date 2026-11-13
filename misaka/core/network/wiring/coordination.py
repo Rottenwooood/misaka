@@ -181,8 +181,6 @@ class UsageParams(Command):
     card_id: CardId | None = None
     request_id: str | None = None
     instance_id: str | None = None
-    since: int | None = Field(None, ge=0, description="Unix seconds; omit for all time.")
-    until: int | None = Field(None, ge=0, description="Unix seconds; omit for all time.")
     live_only: bool = Field(False, description="Only cards running now.")
 
 
@@ -469,8 +467,7 @@ def install(collector, runtime, connection, owner_id):
         actor(con)
         return _data("usage", usage.report(
             con, card_id=params.card_id, request_id=params.request_id,
-            instance_id=params.instance_id, since=params.since, until=params.until,
-            live_only=params.live_only))
+            instance_id=params.instance_id, live_only=params.live_only))
 
     @toolkit.register_tool(
         collector, name="misaka_context", label="Set history aside",
