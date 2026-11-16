@@ -55,7 +55,8 @@ def test_card_usage_sums_tokens_prices_cost_and_wall_time(monkeypatch):
             _event(con, CARD, {"totalTokens": 1500, "provider": "fixture", "model": "local",
                                "usage": {"input": 1000, "output": 500}})
             report = usage.report(con, card_id=CARD)
-            assert report["tokens"] == {"in": 1000, "out": 500, "total": 1500}
+            assert report["tokens"] == {"in": 1000, "out": 500, "cache_read": 0,
+                                        "cache_write": 0, "total": 1500}
             assert report["cost"]["amount"] == 0.002
             assert report["wall_time_s"] == 60
             assert report["model_calls"] == 1 and report["attempts"] == 1
@@ -143,7 +144,8 @@ def test_a_card_that_never_ran_reports_zero():
             work.update_plan(con, "req", 0, [{"id": CARD, "title": "One",
                                               "instance_id": "worker", "body": BODY}])
             report = usage.report(con, card_id=CARD)
-            assert report["tokens"] == {"in": 0, "out": 0, "total": 0}
+            assert report["tokens"] == {"in": 0, "out": 0, "cache_read": 0,
+                                        "cache_write": 0, "total": 0}
             assert report["cost"]["amount"] == 0.0
             assert report["model_calls"] == 0 and report["attempts"] == 0
     finally:
@@ -164,5 +166,24 @@ def test_an_unknown_identifier_is_an_error_not_an_empty_report():
                 usage.report(con, request_id="r_missing")
             with pytest.raises(ValueError, match="Instance not found: ghost"):
                 usage.report(con, instance_id="ghost")
+    finally:
+        s.close()
+
+
+def test_total_tokens_includes_cache_reads_and_writes(monkeypatch):
+    from misaka.core.platform import tasks, usage, work
+    s = Scenario()
+    try:
+        _seed(s)
+        _priced(monkeypatch)
+        with closing(tasks.connect(s.database)) as con:
+            work.update_plan(con, "req", 0, [{"id": CARD, "title": "One",
+                                              "instance_id": "worker", "body": BODY}])
+            _event(con, CARD, {"totalTokens": 999999, "provider": "fixture", "model": "local",
+                               "usage": {"input": 10, "output": 5,
+                                         "cacheRead": 100, "cacheWrite": 20}})
+            tokens = usage.report(con, card_id=CARD)["tokens"]
+            assert tokens == {"in": 10, "out": 5, "cache_read": 100,
+                              "cache_write": 20, "total": 135}
     finally:
         s.close()

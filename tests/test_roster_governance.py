@@ -117,6 +117,9 @@ def test_the_roster_tool_returns_session_state_and_manages_subscriptions():
                 "call", {"command": {"action": "show", "instance_id": "worker"}},
                 None, None, None)))
             assert shown["instances"][0]["session"] == "idle"
+            assert "pid" not in shown["instances"][0]
+            assert "running_card" not in shown["instances"][0]
+            assert "subscriptions" not in shown["instances"][0]
             added = _payload(asyncio.run(tools["misaka_roster"].execute(
                 "call", {"command": {"action": "subscriptions", "id": "worker",
                                      "op": "add",
@@ -210,5 +213,24 @@ def test_subscription_changes_reach_the_centre(monkeypatch):
                 None, None, None))
         assert ("apply", "worker", ["tests"]) in calls
         assert ("clear", ["instance:worker:0"]) in calls
+    finally:
+        s.close()
+
+
+def test_roster_config_is_opt_in():
+    from misaka.core.network.wiring.coordination import _roster_view
+    from misaka.core.platform import tasks
+
+    s = Scenario()
+    try:
+        s.apply([
+            {"op": "template.create", "id": "sister", "role": "sister",
+             "config": {"system": "BASE"}},
+            {"op": "instance.create", "id": "worker", "template_id": "sister",
+             "template_revision": 1},
+        ])
+        with closing(tasks.connect(s.database)) as con:
+            assert "config" not in _roster_view(con)["templates"][0]
+            assert _roster_view(con, include_config=True)["templates"][0]["config"]["system"] == "BASE"
     finally:
         s.close()

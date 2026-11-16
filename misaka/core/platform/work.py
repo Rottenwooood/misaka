@@ -761,7 +761,11 @@ def ordinary_cards(con, card_ids):
             )
 
 
-def owned_state(con, owner, request_id=None):
+def owned_state(con, owner, request_id=None, *, include_body=False):
+    """A status-oriented view: bodies and empty lists are opt-in noise.
+
+    ``include_body`` is for reading the Markdown contract, not for every status poll.
+    """
     from misaka.core.platform import tasks
 
     if request_id is None:
@@ -769,22 +773,35 @@ def owned_state(con, owner, request_id=None):
             "SELECT id,title,workspace,revision FROM work_requests WHERE owner_id=? ORDER BY created_at,id", (owner,)
         )]}
     current = owned_request(con, owner, request_id)
+    request_view = {key: current[key] for key in ("id", "title", "workspace", "revision")}
+    if include_body:
+        request_view["body"] = current["body"]
     rows = con.execute("SELECT * FROM card_state WHERE request_id=? ORDER BY created_at,id", (request_id,))
     cards = []
     for row in rows:
-        card = {key: row[key] for key in ("id", "title", "body", "status", "generation",
-                                          "completion", "completion_count",
-                                          "last_completed_at", "source_card_id")
+        card = {key: row[key] for key in ("id", "title", "status", "generation", "completion")
                 if row[key] is not None}
+        if include_body and row["body"]:
+            card["body"] = row["body"]
+        if row["completion"] != "once":
+            card["completion_count"] = row["completion_count"]
+            if row["last_completed_at"] is not None:
+                card["last_completed_at"] = row["last_completed_at"]
+        if row["source_card_id"]:
+            card["source_card_id"] = row["source_card_id"]
         card["instance"] = row["instance_id"]
-        card["needs"] = tasks.parent_ids(con, row["id"])
-        card["fs_scope"] = json.loads(row["fs_scope"] or "[]")
-        card["forbidden_commands"] = json.loads(row["forbidden_commands"] or "[]")
-        card["subscriptions"] = json.loads(row["subscriptions"] or "[]")
+        if needs := tasks.parent_ids(con, row["id"]):
+            card["needs"] = needs
+        if scoped := json.loads(row["fs_scope"] or "[]"):
+            card["fs_scope"] = scoped
+        if forbidden := json.loads(row["forbidden_commands"] or "[]"):
+            card["forbidden_commands"] = forbidden
+        if subscriptions := json.loads(row["subscriptions"] or "[]"):
+            card["subscriptions"] = subscriptions
         if row["block_reason"]:
             card["blocked"] = row["block_reason"]
         cards.append(card)
-    return {"request": current, "cards": cards}
+    return {"request": request_view, "cards": cards}
 
 
 def save_plan(con, owner, request_id, *, expected_revision=None, workspace=None,

@@ -71,6 +71,7 @@ def test_the_tool_schemas_name_one_thing_once():
     card = tools.PlanCard.model_fields
     assert "instance" in card and "instance_id" not in card
     assert "priority" not in card and "reviewer" not in card and "model" not in card
+    assert "cancel" not in card
     assert tools.DispatchCard.model_fields["generation"].is_required() is False
     assert "role" not in tools.CreateInstance.model_fields or (
         tools.CreateInstance.model_fields["role"].is_required() is False)
@@ -376,5 +377,32 @@ def test_the_usage_tool_is_registered_and_reads_a_card():
             result = asyncio.run(tools["misaka_usage"].execute(
                 "call", {"card_id": "t_a00001"}, None, None, None))
             assert '"total": 12' in result["content"][0]["text"]
+    finally:
+        s.close()
+
+
+def test_a_show_omits_bodies_and_runtime_noise_unless_asked():
+    from misaka.core.platform import tasks, work
+    s = Scenario()
+    try:
+        s.apply([
+            {"op": "template.create", "id": "lo", "role": "last-order", "config": {}},
+            {"op": "instance.create", "id": "lo", "template_id": "lo", "template_revision": 1},
+            {"op": "template.create", "id": "sister", "role": "sister", "config": {}},
+            {"op": "instance.create", "id": "worker", "template_id": "sister", "template_revision": 1},
+            {"op": "request.create", "id": "req", "title": "R", "owner_id": "lo",
+             "workspace": str(s.project)},
+        ])
+        with closing(tasks.connect(s.database)) as con:
+            work.update_plan(con, "req", 0, [{"id": "t_a00001", "title": "One",
+                                              "instance_id": "worker", "body": BODY}])
+            plain = work.owned_state(con, "lo", "req")
+            full = work.owned_state(con, "lo", "req", include_body=True)
+        assert set(plain["request"]) == {"id", "title", "workspace", "revision"}
+        assert "needs" not in plain["cards"][0]
+        assert "body" not in plain["cards"][0]
+        assert "completion_count" not in plain["cards"][0]
+        assert full["request"]["body"] == ""
+        assert full["cards"][0]["body"] == BODY.strip()
     finally:
         s.close()

@@ -74,7 +74,7 @@ def _run_rows(con, task_id):
 
 
 def _card_usage(con, row, registry, generation=None):
-    tokens = {"in": 0, "out": 0, "total": 0}
+    tokens = {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0, "total": 0}
     amount = 0.0
     priced = True
     model = None
@@ -90,10 +90,11 @@ def _card_usage(con, row, registry, generation=None):
         calls += 1
         usage = payload.get("usage") or {}
         tin, tout, tread, twrite = _token_parts(usage)
-        total = _number(payload.get("totalTokens")) or tin + tout + tread + twrite
         tokens["in"] += tin
         tokens["out"] += tout
-        tokens["total"] += total
+        tokens["cache_read"] += tread
+        tokens["cache_write"] += twrite
+        tokens["total"] += tin + tout + tread + twrite
         model = payload.get("model") or model
         cost = _price(registry, payload.get("provider"), payload.get("model"))
         if cost is None:
@@ -121,7 +122,7 @@ def _card_usage(con, row, registry, generation=None):
 
 
 def _summary(parts):
-    tokens = {"in": 0, "out": 0, "total": 0}
+    tokens = {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0, "total": 0}
     amount = 0.0
     priced = True
     wall = 0
@@ -230,7 +231,8 @@ def report(con, *, card_id=None, request_id=None, instance_id=None, live_only=Fa
             continue
         model = part["model"] or "unknown"
         slot = by_model.setdefault(model, {
-            "model": model, "tokens": {"in": 0, "out": 0, "total": 0},
+            "model": model, "tokens": {"in": 0, "out": 0, "cache_read": 0,
+                                      "cache_write": 0, "total": 0},
             "calls": 0, "_amount": 0.0, "_priced": True,
         })
         for key in slot["tokens"]:

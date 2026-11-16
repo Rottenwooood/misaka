@@ -19,6 +19,8 @@ class Command(BaseModel):
 class ShowTask(Command):
     action: Literal["show"]
     request_id: str | None = Field(None, description="Omit for a list of your requests across projects.")
+    include_body: bool = Field(
+        False, description="Include the request and card Markdown bodies; status queries can omit them.")
 
 
 class CardSubscription(Command):
@@ -38,7 +40,6 @@ class PlanCard(Command):
     fs_scope: list[str] | None = Field(None, description="Paths this card may touch.")
     forbidden_commands: list[str] | None = Field(None, description="Command patterns this card must not run.")
     subscriptions: list[CardSubscription] | None = None
-    cancel: bool = False
 
 
 class SavePlan(Command):
@@ -102,6 +103,8 @@ class TaskParams(Command):
 class ShowRoster(Command):
     action: Literal["show"]
     instance_id: str | None = None
+    include_config: bool = Field(
+        False, description="Include each latest template's full configuration; status queries can omit it.")
 
 
 class SessionConfig(Command):
@@ -222,7 +225,7 @@ def _data(label, value):
             "details": {}}
 
 
-def _roster_view(con, instance_id=None):
+def _roster_view(con, instance_id=None, *, include_config=False):
     """Latest node per template and the instances with their live session state."""
     state = work.roster(con)
     latest = {}
@@ -232,7 +235,7 @@ def _roster_view(con, instance_id=None):
     templates = []
     for node in latest.values():
         row = {key: node[key] for key in ("id", "revision", "role")}
-        if node.get("config"):
+        if include_config and node.get("config"):
             row["config"] = node["config"]
         templates.append(row)
     status = {row["id"]: row for row in work.instance_status(con, instance_id)}
@@ -242,8 +245,11 @@ def _roster_view(con, instance_id=None):
             continue
         row = {key: item[key] for key in ("id", "label", "template_id", "template_revision")
                if item.get(key) is not None}
-        row["subscriptions"] = work.instance_specs(item["subscriptions"])
-        row.update(status.get(item["id"], {}))
+        if subscriptions := work.instance_specs(item["subscriptions"]):
+            row["subscriptions"] = subscriptions
+        row.update({key: value for key, value in status.get(item["id"], {}).items()
+                    if key not in ("pid", "running_card", "last_active_at")
+                    or value is not None})
         if item.get("retired"):
             row["retired"] = True
         instances.append(row)
@@ -388,8 +394,9 @@ def install(collector, runtime, connection, owner_id):
         collector, name="misaka_task", label="Coordinate work",
         description="Read or save your task plans, start named ready cards, resume a blocked card, "
                     "cancel or delete a request, review finished work, or read a card's structured "
-                    "result. Saving does not start execution. Starting may consume model quota. "
-                    "Follow the user's instructions for presenting plans.",
+                    "result. show omits Markdown bodies unless include_body is true. Saving does not "
+                    "start execution. Starting may consume model quota. Follow the user's "
+                    "instructions for presenting plans.",
         parameters=TaskParams, schema=_command_schema,
     )
     async def task(tool_call_id, params, signal, on_update, ctx):
@@ -423,7 +430,8 @@ def install(collector, runtime, connection, owner_id):
         with tasks.write_txn(con):
             owner = actor(con)
             if isinstance(command, ShowTask):
-                return _data("work-plan", work.owned_state(con, owner, command.request_id))
+                return _data("work-plan", work.owned_state(
+                    con, owner, command.request_id, include_body=command.include_body))
             if isinstance(command, ResumeCards):
                 for card_id in command.cards:
                     work.resume_card(con, card_id)
@@ -461,7 +469,10 @@ def install(collector, runtime, connection, owner_id):
     @toolkit.register_tool(
         collector, name="misaka_usage", label="Read usage",
         description="Read token counts, priced cost and wall-clock time for one card, a request, "
-                    "an instance or the whole board; live_only lists what is running now.",
+                    "an instance or the whole board; tokens separate input, output, cache reads "
+                    "and cache writes, and total is their sum. model_calls counts model calls, "
+                    "attempts counts runs and failures counts failed runs. live_only lists what "
+                    "is running now.",
         parameters=UsageParams,
     )
     async def usage_tool(tool_call_id, params, signal, on_update, ctx):
@@ -512,7 +523,8 @@ def install(collector, runtime, connection, owner_id):
 
     @toolkit.register_tool(
         collector, name="misaka_roster", label="Manage templates and instances",
-        description="Read the roster and each instance's session state; create or revise templates; "
+        description="Read the roster and each instance's session state; show omits template "
+                    "configurations unless include_config is true. Create or revise templates; "
                     "register or stop an instance; manage its long-lived subscriptions; delete "
                     "instances or template revisions in bulk. These operations do not launch models.",
         parameters=RosterParams, schema=_command_schema,
@@ -522,7 +534,8 @@ def install(collector, runtime, connection, owner_id):
         command = params.command
         actor(con)
         if isinstance(command, ShowRoster):
-            return _data("roster", _roster_view(con, command.instance_id))
+            return _data("roster", _roster_view(
+                con, command.instance_id, include_config=command.include_config))
         if isinstance(command, Subscriptions):
             return _data("instance-subscriptions", subscription_view(con, command))
         if isinstance(command, StopInstance):
