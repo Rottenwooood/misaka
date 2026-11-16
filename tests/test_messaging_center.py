@@ -124,3 +124,24 @@ def test_subscriptions_follow_the_card(centre):
 def test_dropping_a_missing_subscription_is_not_a_failure(centre):
     sync = SubscriptionSync(CenterClient(centre.url, "secret"), "worker-1")
     assert sync.clear(["card:t_a00001:9"]) == []
+
+
+def test_feishu_is_an_explicit_last_order_target(monkeypatch):
+    from misaka.core.network import messages
+
+    sent = []
+
+    class Centre:
+        def send(self, type, content, *, to=None, message_id=None):
+            sent.append((type, content, to))
+            return {"id": "m-feishu"}
+
+    monkeypatch.setattr("misaka.core.messaging.config.center", lambda: Centre())
+    result = messages.send_as("lo", "feishu", "hello", "summary")
+    assert result["details"] == {"to": "feishu", "message_id": "m-feishu"}
+    assert sent == [("feishu",
+                     {"title": "Last Order", "text": "hello", "summary": "summary", "from": "lo"},
+                     ["feishu-misaka"])]
+
+    with pytest.raises(ValueError, match="Only Last Order"):
+        messages.send_as("10032", "feishu", "hello")

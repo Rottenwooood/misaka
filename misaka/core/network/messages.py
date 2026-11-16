@@ -590,6 +590,21 @@ def post(target, body, *, summary, sender, sender_task=None, sender_session=None
     return mid
 
 
+def _send_feishu(sender, message, summary):
+    """Explicit Last Order -> Feishu delivery through the configured centre."""
+    from misaka.core.messaging import config
+
+    client = config.center()
+    if client is None:
+        raise RuntimeError("No message centre is configured; set MISAKA_CENTER_URL and MISAKA_CENTER_TOKEN")
+    payload = {"title": "Last Order", "text": message, "summary": summary, "from": sender}
+    result = client.send("feishu", payload, to=["feishu-misaka"])
+    mid = result.get("id") or "queued"
+    return {"content": [{"type": "text", "text": (
+        f"Message #{mid} queued for Feishu via the message centre.")}],
+        "details": {"to": "feishu", "message_id": mid}}
+
+
 def send_as(sender, addr, message, summary=None, *, request_input=False, card_task=None,
             sender_session=None, space=None, contact=False):
     """SendMessage, whoever sends it: a misaka session's tool or an ally's MCP bridge.
@@ -597,6 +612,12 @@ def send_as(sender, addr, message, summary=None, *, request_input=False, card_ta
     Resolves the one recipient, queues the row (parking this card first for a help request) and
     returns the tool result. Blocking: sqlite and, for a contact session, a process start."""
     summary = summary or message.strip().splitlines()[0][:80]
+    if addr.strip().lower() == "feishu":
+        if request_input:
+            raise ValueError("A help request cannot target Feishu directly")
+        if sender != "lo":
+            raise ValueError("Only Last Order can send to Feishu")
+        return _send_feishu(sender, message, summary)
     target = resolve_address(addr, sender=sender, space=space, sender_task=card_task,
                              sender_session=sender_session, contact=contact)
     if request_input and target["to_addr"] != "last-order":
@@ -860,8 +881,8 @@ class SendMessageParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     to: str = Field(description=(
-        "A card id, a session id, an instance id, or the name of one role in your space. "
-        "A finished card is woken in her own session."))
+        "A card id, a session id, an instance id, the name of one role in your space, "
+        "or `feishu` for Last Order's Feishu channel. A finished card is woken in her own session."))
     message: str = Field(description="Plain text; it is the whole message.")
 
     @field_validator("message")
@@ -908,9 +929,9 @@ class MessagesPart:
             name="SendMessage",
             label="Send Message",
             description=(
-                "Send a message to one running agent at its next tool boundary, or wake a role's "
-                "contact session for one asynchronous turn. A message never changes card state "
-                "or authorizes work."),
+                "Send a message to one running agent at its next tool boundary, wake a role's "
+                "contact session for one asynchronous turn, or, as Last Order, send to Feishu "
+                "with to='feishu'. A message never changes card state or authorizes work."),
             parameters=SendMessageParams.model_json_schema(),
             execute=self._send,
             promptSnippet="Send a message to another agent",
