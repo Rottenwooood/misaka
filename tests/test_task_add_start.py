@@ -66,7 +66,6 @@ def test_create_start_and_delete(board, monkeypatch, tmp_path, capsys):
 @pytest.mark.parametrize(
     "case,said",
     [
-        ("body", "acceptance criteria"),
         ("instance", "Instance not found"),
         ("request", "Work request not found"),
         ("reviewer", "different from the assignee"),
@@ -82,7 +81,7 @@ def test_invalid_contract_or_identity_is_refused(board, case, said):
         "--instance",
         "missing" if case == "instance" else iid,
         "--body",
-        "goal" if case == "body" else CONTRACT,
+        CONTRACT,
     ]
     if case == "reviewer":
         args += ["--reviewer", "10032"]

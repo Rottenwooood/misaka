@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import secrets
 import time
 from contextlib import nullcontext
 from graphlib import CycleError, TopologicalSorter
@@ -397,6 +398,7 @@ def update_plan(con, request_id, expected_revision, changes):
                 "fs_scope",
                 "forbidden_commands",
                 "subscriptions",
+                "completion",
             }
             if set(change) - allowed:
                 raise ValueError(
@@ -406,11 +408,21 @@ def update_plan(con, request_id, expected_revision, changes):
             values.update(change)
             title = _text(values.get("title"), "title")
             body = _text(values.get("body"), "body")
-            if "## acceptance criteria" not in body.lower():
-                raise ValueError("Card body must contain ## acceptance criteria")
+            completion = values.get("completion", row["completion"] if row is not None else "once")
+            if completion not in ("once", "repeat_keep", "repeat_clear"):
+                raise ValueError("completion must be once, repeat_keep or repeat_clear")
+            if row is not None and completion != row["completion"]:
+                raise ValueError("A card's completion type is fixed at creation")
             executor = instance(con, values.get("instance_id"))
-            if executor["role"] != "sister" or executor["retired"]:
+            reusing_retired = (
+                row is not None and row["completion"] == "repeat_clear" and executor["retired"]
+            )
+            if executor["role"] != "sister" or (executor["retired"] and not reusing_retired):
                 raise ValueError("Cards require a non-retired Sister instance")
+            if completion == "repeat_clear" and not reusing_retired and (
+                executor["session_file"] or executor["writer_pid"]
+            ):
+                raise ValueError("A repeat_clear card needs a fresh instance with no session")
             if row is not None and row["status"] not in ("ready", "todo", "held", "blocked", "triage"):
                 raise ValueError(
                     f"Card {tid} is {row['status']}; stop it with the stop action, or create a follow-up"
@@ -443,6 +455,9 @@ def update_plan(con, request_id, expected_revision, changes):
                     fs_scope=fs_scope,
                     forbidden_commands=forbidden,
                     subscriptions=specs,
+                    completion=completion,
+                    template_id=executor["template_id"],
+                    template_revision=executor["template_revision"],
                 )
             else:
                 con.execute(
@@ -757,7 +772,9 @@ def owned_state(con, owner, request_id=None):
     rows = con.execute("SELECT * FROM card_state WHERE request_id=? ORDER BY created_at,id", (request_id,))
     cards = []
     for row in rows:
-        card = {key: row[key] for key in ("id", "title", "body", "status", "generation")
+        card = {key: row[key] for key in ("id", "title", "body", "status", "generation",
+                                          "completion", "completion_count",
+                                          "last_completed_at", "source_card_id")
                 if row[key] is not None}
         card["instance"] = row["instance_id"]
         card["needs"] = tasks.parent_ids(con, row["id"])
@@ -1094,6 +1111,19 @@ def card_generation(con, card_id):
     return int(row["generation"])
 
 
+def _fresh_instance(con, card_id, template_id, template_revision):
+    """Create the per-run instance a repeat_clear card needs; caller owns the transaction."""
+
+    if not template_id or template_revision is None:
+        raise ValueError("A repeat_clear card has no template to instantiate")
+    iid = f"{card_id}-{int(time.time())}-{secrets.token_hex(2)}"
+    con.execute(
+        "INSERT INTO instances(id,template_id,template_revision,label,created_at) VALUES(?,?,?,?,?)",
+        (iid, template_id, template_revision, f"{card_id} run", int(time.time())),
+    )
+    return instance(con, iid)
+
+
 def dispatch_target(con, owner, card_id, generation):
     from misaka.core.platform import tasks
 
@@ -1106,4 +1136,11 @@ def dispatch_target(con, owner, card_id, generation):
         raise ValueError(f"Card {card_id} generation changed; read the current plan")
     if row["status"] != "ready":
         raise ValueError(f"Card {card_id} is not ready (current status: {row['status']})")
+    if row["completion"] == "repeat_clear":
+        current = instance(con, row["instance_id"])
+        if current["retired"] or current["session_file"] or current["writer_pid"]:
+            con.execute("UPDATE instances SET retired=1 WHERE id=?", (current["id"],))
+            fresh = _fresh_instance(con, card_id, row["template_id"], row["template_revision"])
+            con.execute("UPDATE tasks SET instance_id=? WHERE id=?", (fresh["id"], card_id))
+            row = tasks.get(con, card_id)
     return row

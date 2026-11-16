@@ -117,13 +117,21 @@ STATE = {
 }
 
 
-def _split_body(body):
-    text = str(body or "")
-    marker = "## acceptance criteria"
-    index = text.lower().find(marker)
-    if index < 0:
-        return text.strip(), ""
-    return text[:index].strip(), text[index + len(marker):].strip()
+def _markdown_lines(text, width):
+    """Render a card body through the same Markdown engine the transcript uses."""
+    from misaka.ui.tui.components.markdown import Markdown, MarkdownTheme
+    from misaka.utils.ansi import strip_ansi
+
+    def same(value):
+        return value
+
+    theme = MarkdownTheme(
+        heading=same, link=same, linkUrl=same, code=same, codeBlock=same,
+        codeBlockBorder=same, quote=same, quoteBorder=same, hr=same,
+        listBullet=same, bold=same, italic=same, strikethrough=same, underline=same,
+    )
+    rendered = Markdown(str(text or ""), 0, 0, theme).render(max(1, width))
+    return [strip_ansi(line).rstrip() for line in rendered]
 
 
 def _wrap(text, limit):
@@ -178,6 +186,7 @@ class Canvas:
         self.select_card = select_card
         self.request_id = request_id
         self.show_inspector = True
+        self.body_scroll = 0
         self.panned = False
         self.offset_x = self.offset_y = 0
         self.drag = None
@@ -295,6 +304,7 @@ class Canvas:
 
     def locate(self, node, cols, rows):
         self.selected = node["key"]
+        self.body_scroll = 0
         self.panned = True
         self.x = max(0, node["x"] - max(0, (cols - 38) // 2))
         self.y = max(0, node["y"] - max(0, (rows - 12) // 2))
@@ -337,6 +347,9 @@ class Canvas:
             self.x = self.y = 0
         elif key == "i":
             self.show_inspector = not self.show_inspector
+        elif key in ("J", "K", "\x1b[6~", "\x1b[5~"):
+            step = 6 if key in ("\x1b[6~", "\x1b[5~") else 3
+            self.body_scroll = max(0, self.body_scroll + (step if key in ("J", "\x1b[6~") else -step))
         elif self.nodes:
             current = next(
                 (i for i, n in enumerate(self.nodes) if n["key"] == self.selected), 0
@@ -531,8 +544,7 @@ class Canvas:
         s.text(0, rows - 1, "只读 · 每 0.5 秒刷新 · 任务来自当前状态库 · q 退出" + position, "dim")
         return s
 
-    @staticmethod
-    def _inspector(s, node, x, y, w, h):
+    def _inspector(self, s, node, x, y, w, h):
         if w < 12 or h < 5:
             return
         s.box(x, y, w, h, "dim")
@@ -542,6 +554,11 @@ class Canvas:
         s.text(x + 2, y + 1, clipped(node["id"], w - 4), "dim")
         s.text(x + 2, y + 2, clipped(node["title"], w - 4), "normal")
         s.text(x + 2, y + 3, Canvas.state(node) + " / " + node["instance_id"], "accent")
+        completion = node.get("completion") or "once"
+        if completion != "once":
+            count = node.get("completion_count") or 0
+            label = "可多次完成 · 已 " + str(count) + " 次"
+            s.text(x + 2, y + 4, clipped(label, w - 4), "accent")
         line = y + 5
         for label, value in (
             ("依赖", ", ".join(node.get("needs") or []) or "无"),
@@ -558,21 +575,17 @@ class Canvas:
                 line += 1
         line += 1
         body = node.get("body") or ""
-        contract, acceptance = _split_body(body)
-        s.text(x + 2, line, "契约", "dim")
+        s.text(x + 2, line, "正文", "dim")
         line += 1
-        for part in _wrap(contract, max(8, w - 4))[:4]:
+        available = max(0, y + h - 1 - line)
+        lines = _markdown_lines(body, max(8, w - 4))
+        self.body_scroll = min(self.body_scroll, max(0, len(lines) - available))
+        for part in lines[self.body_scroll:self.body_scroll + available]:
             s.text(x + 2, line, part, "normal")
             line += 1
-        if line < y + h - 4:
-            s.text(x + 2, line, "验收", "dim")
-            line += 1
-            for part in _wrap(acceptance, max(8, w - 4))[:4]:
-                if line >= y + h - 1:
-                    break
-                s.text(x + 2, line, part, "normal")
-                line += 1
-        s.text(x + 2, y + h - 1, "i 收起详情", "dim")
+        total = len(lines)
+        position = f"{self.body_scroll + 1}-{min(total, self.body_scroll + available)}/{total}" if total else "空"
+        s.text(x + 2, y + h - 1, f"J/K 滚动正文 {position} · i 收起", "dim")
 
 def run(reader, select_card=None):
     if os.name != "posix":

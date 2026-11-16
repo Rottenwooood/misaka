@@ -34,6 +34,7 @@ def create(
     origin_session=None,
     after_row=None,
     needs=(),
+    completion="once",
 ):
     with tasks._write_txn(con):
         owner = work.request(con, request_id)
@@ -54,6 +55,7 @@ def create(
                     "priority": priority,
                     "reviewer": reviewer,
                     "needs": list(needs),
+                    "completion": completion,
                 }
             ],
         )

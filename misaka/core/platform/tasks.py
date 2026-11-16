@@ -62,6 +62,12 @@ CREATE TABLE IF NOT EXISTS tasks (
  worker_identity TEXT,
  current_run_id TEXT,
  generation INTEGER NOT NULL DEFAULT 1,
+ completion TEXT NOT NULL DEFAULT 'once',
+ completion_count INTEGER NOT NULL DEFAULT 0,
+ last_completed_at INTEGER,
+ template_id TEXT,
+ template_revision INTEGER,
+ source_card_id TEXT,
  review_rounds INTEGER NOT NULL DEFAULT 0,
  review_feedback TEXT,
  review_lock TEXT,
@@ -372,6 +378,22 @@ def require_schema(con, component, version, *, populated):
     )
 
 
+def _ensure_task_columns(con):
+    """Additive card columns; no format-version bump for a nullable/defaulted field."""
+    columns = {row[1] for row in con.execute("PRAGMA table_info(tasks)")}
+    additions = {
+        "completion": "TEXT NOT NULL DEFAULT 'once'",
+        "completion_count": "INTEGER NOT NULL DEFAULT 0",
+        "last_completed_at": "INTEGER",
+        "template_id": "TEXT",
+        "template_revision": "INTEGER",
+        "source_card_id": "TEXT",
+    }
+    for name, ddl in additions.items():
+        if name not in columns:
+            con.execute(f"ALTER TABLE tasks ADD COLUMN {name} {ddl}")
+
+
 def connect(path: str) -> sqlite3.Connection:
     path = os.path.expanduser(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -392,6 +414,7 @@ def connect(path: str) -> sqlite3.Connection:
                 # Additive and nullable: an older board gains the column on its next open
                 # without changing any stored row, the same way the indexes above do.
                 con.execute("ALTER TABLE instances ADD COLUMN last_active_at INTEGER")
+            _ensure_task_columns(con)
         con.execute("PRAGMA foreign_keys=ON")
         # journal_mode=WAL is a request, not a promise: a filesystem without the shared-memory and
         # locking primitives WAL needs (NFS, SMB, some container overlays) leaves SQLite in
@@ -474,7 +497,8 @@ def _scope_json(value):
 @_serialized
 def create_task(con, title, body="", *, request_id, instance_id, model=None, priority=0,
                 reviewer=None, workspace=None, output_dir=None, origin_session=None, task_id=None,
-                fs_scope=None, forbidden_commands=None, subscriptions=None):
+                fs_scope=None, forbidden_commands=None, subscriptions=None,
+                completion="once", template_id=None, template_revision=None, source_card_id=None):
     """Create the canonical card row. Identity and ownership are never inferred from files."""
     from misaka.core.platform import work
     owner = work.request(con, request_id)
@@ -494,11 +518,13 @@ def create_task(con, title, body="", *, request_id, instance_id, model=None, pri
     tid = task_id or "t_" + secrets.token_hex(3)
     con.execute(
         "INSERT INTO tasks(id,request_id,instance_id,title,body,reviewer,model,priority,"
-        "workspace,output_dir,origin_session,fs_scope,forbidden_commands,subscriptions,created_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "workspace,output_dir,origin_session,fs_scope,forbidden_commands,subscriptions,"
+        "completion,completion_count,last_completed_at,template_id,template_revision,source_card_id,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL,?,?,?,?)",
         (tid,request_id,instance_id,title,body,reviewer,model,priority,workspace,output_dir,
          origin_session or None,_scope_json(fs_scope),_scope_json(forbidden_commands),
-         _scope_json(subscriptions),int(time.time())),
+         _scope_json(subscriptions),completion,template_id,template_revision,source_card_id,
+         int(time.time())),
     )
     add_event(con, tid, "created", {"title":title,"request_id":request_id,"instance_id":instance_id})
     return tid
@@ -1334,16 +1360,48 @@ def submit_task(con, task_id, generation=None, claim_lock=None):
         clauses.extend(["status='running'", "claim_lock=?", "claim_expires>=?"])
         values.extend([claim_lock, now])
     with _write_txn(con):
-        cur = con.execute(
-            "UPDATE tasks SET status=CASE WHEN reviewer IS NULL THEN 'done' ELSE 'review' END, "
-            "completed_at=CASE WHEN reviewer IS NULL THEN ? ELSE NULL END, "
-            "worker_pid=NULL, claim_lock=NULL, worker_identity=NULL, claim_expires=NULL, "
-            "review_lock=NULL,review_expires=NULL,review_pid=NULL,review_identity=NULL "
-            f"WHERE {' AND '.join(clauses)}",
-            tuple(values),
-        )
+        card = con.execute(
+            "SELECT completion,completion_count,reviewer FROM card_state WHERE id=?",
+            (task_id,),
+        ).fetchone()
+        repeat = card is not None and card["completion"] != "once" and card["reviewer"] is None
+        if repeat:
+            cur = con.execute(
+                "UPDATE tasks SET status='ready', completed_at=NULL, "
+                "completion_count=completion_count+1, last_completed_at=?, "
+                "worker_pid=NULL, claim_lock=NULL, worker_identity=NULL, claim_expires=NULL, "
+                "review_lock=NULL,review_expires=NULL,review_pid=NULL,review_identity=NULL, "
+                "block_kind=NULL,block_reason=NULL,block_fingerprint=NULL,block_recurrence=0,blocked_at=NULL "
+                f"WHERE {' AND '.join(clauses)}",
+                (now, *values[1:]),
+            )
+        else:
+            cur = con.execute(
+                "UPDATE tasks SET status=CASE WHEN reviewer IS NULL THEN 'done' ELSE 'review' END, "
+                "completed_at=CASE WHEN reviewer IS NULL THEN ? ELSE NULL END, "
+                "worker_pid=NULL, claim_lock=NULL, worker_identity=NULL, claim_expires=NULL, "
+                "review_lock=NULL,review_expires=NULL,review_pid=NULL,review_identity=NULL "
+                f"WHERE {' AND '.join(clauses)}",
+                tuple(values),
+            )
         if cur.rowcount == 1:
-            _settle_done(con, task_id)
+            if repeat:
+                _finish_current_run(con, task_id, "done")
+                _clear_failures(con, task_id)
+                if card["completion_count"] == 0:
+                    promote_dependents(con, task_id)
+                if card["completion"] == "repeat_clear":
+                    con.execute(
+                        "UPDATE instances SET retired=1 WHERE id="
+                        "(SELECT instance_id FROM tasks WHERE id=?)",
+                        (task_id,),
+                    )
+                add_event(con, task_id, "completed", {
+                    "completion": card["completion"],
+                    "completion_count": int(card["completion_count"]) + 1,
+                })
+            else:
+                _settle_done(con, task_id)
 
         return cur.rowcount == 1
 
@@ -1415,12 +1473,26 @@ def approve_review(con, task_id, lock, *, generation=None, summary=None) -> bool
         clauses.append("generation=?")
         values.append(generation)
     with _write_txn(con):
-        cur = con.execute(
-            "UPDATE tasks SET status='done',completed_at=?,review_feedback=NULL,review_lock=NULL,"
-            "review_expires=NULL,review_pid=NULL,review_identity=NULL "
-            f"WHERE {' AND '.join(clauses)}",
-            tuple(values),
-        )
+        card = con.execute(
+            "SELECT completion,completion_count FROM card_state WHERE id=?", (task_id,)
+        ).fetchone()
+        repeat = card is not None and card["completion"] != "once"
+        if repeat:
+            cur = con.execute(
+                "UPDATE tasks SET status='ready',completed_at=NULL,"
+                "completion_count=completion_count+1,last_completed_at=?,"
+                "review_feedback=NULL,review_lock=NULL,review_expires=NULL,"
+                "review_pid=NULL,review_identity=NULL "
+                f"WHERE {' AND '.join(clauses)}",
+                (now, *values[1:]),
+            )
+        else:
+            cur = con.execute(
+                "UPDATE tasks SET status='done',completed_at=?,review_feedback=NULL,review_lock=NULL,"
+                "review_expires=NULL,review_pid=NULL,review_identity=NULL "
+                f"WHERE {' AND '.join(clauses)}",
+                tuple(values),
+            )
         if cur.rowcount == 1:
             _finish_current_run(con, task_id, "approved", summary=summary)
             _clear_failures(con, task_id)
@@ -1428,13 +1500,25 @@ def approve_review(con, task_id, lock, *, generation=None, summary=None) -> bool
                 "UPDATE tasks SET block_kind=NULL,block_reason=NULL,block_fingerprint=NULL,"
                 "block_recurrence=0,blocked_at=NULL WHERE id=?", (task_id,),
             )
-            promote_dependents(con, task_id)
+            if not repeat or card["completion_count"] == 0:
+                promote_dependents(con, task_id)
+            if repeat and card["completion"] == "repeat_clear":
+                con.execute(
+                    "UPDATE instances SET retired=1 WHERE id="
+                    "(SELECT instance_id FROM tasks WHERE id=?)",
+                    (task_id,),
+                )
             reviewer = con.execute(
                 "SELECT reviewer FROM card_state WHERE id=?", (task_id,)
             ).fetchone()[0]
             add_event(con, task_id, "review_approved",
                       {"reviewer": reviewer, "summary": summary or ""},
                       generation=generation)
+            if repeat:
+                add_event(con, task_id, "completed", {
+                    "completion": card["completion"],
+                    "completion_count": int(card["completion_count"]) + 1,
+                })
 
         return cur.rowcount == 1
 

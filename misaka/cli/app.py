@@ -37,13 +37,15 @@ def _parser(extension_commands=None):
     tk.add_argument("--delete", action="store_true", help="Delete the card and its event history")
     tk.add_argument("--instance", help="add: the Sister instance identity")
     tk.add_argument("--request", help="add: the owning work request identity")
-    tk.add_argument("--body", help="add: the task contract; it must have a `## acceptance criteria` section")
-    tk.add_argument("--body-file", help="add: read the task contract from this file")
+    tk.add_argument("--body", help="add: the task card body, as Markdown")
+    tk.add_argument("--body-file", help="add: read the card body from this file")
     tk.add_argument("--reviewer", help="add: an independent reviewer, a Sister other than the assignee")
     tk.add_argument("--priority", type=int, default=0, help="add: higher runs first (default: 0)")
     tk.add_argument("--model", help="add: the model for this card only (default: the Sister's own)")
     tk.add_argument("--needs", action="append", default=[], metavar="ID",
                     help="add: a card this one waits for (repeatable)")
+    tk.add_argument("--completion", choices=("once", "repeat_keep", "repeat_clear"),
+                    default="once", help="add: one-shot, recurring with context, or recurring on a fresh instance")
 
     state = sub.add_parser("state", help="Inspect or atomically edit work requests, templates, instances and plans")
     state_sub = state.add_subparsers(dest="state_cmd", required=True)
@@ -469,12 +471,12 @@ def _task_add(con, title, args):
         errors.append("the reviewer must be different from the assignee")
     if errors:
         return ("Card not added: " + "; ".join(errors) +
-                "\nThe body is the task contract: `## goal`, `## boundaries` and `## acceptance criteria`.")
+                "\nThe body is the task card, as Markdown.")
     card = cards[0]
     try:
         tid = card_files.create(con, db.canonical_workspace(), card["title"], card["body"], args.instance,
                                 request_id=args.request, model=card["model"], priority=card["priority"], reviewer=args.reviewer,
-                                needs=args.needs)
+                                needs=args.needs, completion=args.completion)
     except ValueError as error:
         return f"Card not added: {error}"
     print(f"Added {tid}: {card['title']} → {card['assignee']}. Work has not started: "

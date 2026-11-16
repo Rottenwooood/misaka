@@ -105,8 +105,8 @@ def validate_cards(obj, sisters):
         title, body, assignee = c.get("title"), c.get("body"), c.get("assignee")
         if not (isinstance(title, str) and title.strip()):
             errors.append(f"card {i}: missing title")
-        if not (isinstance(body, str) and '## acceptance criteria' in body.lower()):
-            errors.append(f"card {i}: body must contain a testable `## acceptance criteria` section")
+        if not isinstance(body, str):
+            errors.append(f"card {i}: body must be text")
         if assignee not in sisters:
             errors.append(f"card {i}: assignee={assignee} not in the roster {sorted(sisters)}")
         cards.append({

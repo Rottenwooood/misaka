@@ -30,8 +30,10 @@ class CardSubscription(Command):
 class PlanCard(Command):
     id: CardId
     title: str | None = None
-    body: str | None = Field(None, description="The contract; it must have an ## acceptance criteria section.")
+    body: str | None = Field(None, description="The card body, as Markdown.")
     instance: str | None = Field(None, description="The Sister instance this card runs on.")
+    completion: Literal["once", "repeat_keep", "repeat_clear"] | None = Field(
+        None, description="once; repeat_keep; or repeat_clear (needs a fresh instance).")
     needs: list[CardId] | None = None
     fs_scope: list[str] | None = Field(None, description="Paths this card may touch.")
     forbidden_commands: list[str] | None = Field(None, description="Command patterns this card must not run.")

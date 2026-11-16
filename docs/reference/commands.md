@@ -47,7 +47,7 @@ lists them all.
 | `misaka allies` | list the enabled allies and whether each can start |
 | `misaka moa list` / `configure` / `delete` | Mixture-of-Agents presets |
 | `misaka board` | show the task board |
-| `misaka task add TITLE --to SISTER --body-file FILE` | add a card by hand (`--body TEXT`, `--reviewer`, `--priority`, `--model`, `--needs ID`); the body needs `## acceptance criteria` |
+| `misaka task add TITLE --to SISTER --body-file FILE` | add a card by hand (`--body TEXT`, `--reviewer`, `--priority`, `--model`, `--needs ID`); the body is Markdown |
 | `misaka task start ID` | run a ready card in this terminal |
 | `misaka task ID --delete` | delete a card and its history |
 
