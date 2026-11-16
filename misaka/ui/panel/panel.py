@@ -1290,6 +1290,14 @@ def open_session_panes(listing):
 def session_pane_id(action, live):
     return live.get(session_key(action))
 
+
+def session_belongs_here(entry, space_id, live, active_panes):
+    """A session's stored space id is stale when a restored pane got a new space."""
+    if entry.get("space") == space_id:
+        return True
+    path = entry.get("path")
+    return bool(path and live.get(os.path.realpath(path)) in active_panes)
+
 def mark_open_sessions(rows, listing, focused):
     """Mark open conversations; only a writer pane overrides the session's state dot."""
     live = open_session_panes(listing)
@@ -2180,11 +2188,24 @@ def launch():
         """One row per session, whatever its kind or storage layout."""
         from misaka.core import session_catalog
         everything = side["sess_mode"] == "all"
+        # A pane can outlive the catalog space id stored when it started (a restored pane gets
+        # a fresh space id). Its live pane is the stronger fact: include the session here even
+        # when the stored id is stale, or an active Last Order disappears from the count.
+        live = open_session_panes(listing)
+        current = active_space()
+        active_panes = set()
+        if current:
+            for tree in current["tabs"]:
+                active_panes.update(hui.pane_ids(tree))
+        def belongs_here(entry):
+            return session_belongs_here(entry, side["ws"], live, active_panes)
         lo, others = [], []
         for entry in cards_cache["sessions"]:
             # "here" is the active space's own sessions: a session belongs to the space it
             # first ran in, so two spaces on one folder do not show each other's.
-            if not session_catalog.available(entry) or (not everything and entry.get("space") != side["ws"]):
+            if not session_catalog.available(entry) or (
+                not everything and not belongs_here(entry)
+            ):
                 continue
             path = entry["path"]
             meta = session_meta(path) if path else {}

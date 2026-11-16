@@ -1211,3 +1211,11 @@ def test_the_active_space_has_a_close_hit():
                "state": "idle", "seen": True, "alive": True}]
     _lines, hits, _sections = panel_mod.format_sidebar(spaces, [], 40, 30)
     assert any(action == ("space-close", "w1") for _rect, action in hits)
+
+
+def test_a_live_session_in_the_space_survives_a_stale_catalog_space():
+    entry = {"space": "old-space", "path": "/tmp/live-session.jsonl"}
+    live = {"/tmp/live-session.jsonl": "p1"}
+    assert panel_mod.session_belongs_here(entry, "new-space", live, {"p1"})
+    assert not panel_mod.session_belongs_here(entry, "new-space", live, {"p2"})
+    assert panel_mod.session_belongs_here({**entry, "space": "new-space"}, "new-space", {}, set())
