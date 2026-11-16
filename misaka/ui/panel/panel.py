@@ -2191,14 +2191,19 @@ def launch():
         # A pane can outlive the catalog space id stored when it started (a restored pane gets
         # a fresh space id). Its live pane is the stronger fact: include the session here even
         # when the stored id is stale, or an active Last Order disappears from the count.
-        live = open_session_panes(listing)
-        current = active_space()
+        live_builder = globals().get("open_session_panes")
+        live = live_builder(listing) if live_builder else {}
+        current = next((space for space in spaces if space["id"] == side["ws"]), None)
         active_panes = set()
-        if current:
+        geometry = globals().get("hui")
+        if current and geometry:
             for tree in current["tabs"]:
-                active_panes.update(hui.pane_ids(tree))
+                active_panes.update(geometry.pane_ids(tree))
         def belongs_here(entry):
-            return session_belongs_here(entry, side["ws"], live, active_panes)
+            if entry.get("space") == side["ws"]:
+                return True
+            path = entry.get("path")
+            return bool(path and live.get(os.path.realpath(path)) in active_panes)
         lo, others = [], []
         for entry in cards_cache["sessions"]:
             # "here" is the active space's own sessions: a session belongs to the space it

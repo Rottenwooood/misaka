@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS inbox_messages (
  endpoint TEXT NOT NULL,
  source TEXT NOT NULL,
  received_at INTEGER NOT NULL,
- delivered_at INTEGER
+ delivered_at INTEGER,
+ payload TEXT
 );
 CREATE TABLE IF NOT EXISTS schema_migrations (
  component TEXT NOT NULL,
@@ -85,6 +86,9 @@ def connect(path=None) -> sqlite3.Connection:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA journal_mode=WAL")
         con.executescript(SCHEMA + VERSION_TABLE)
+        inbox_columns = {row[1] for row in con.execute("PRAGMA table_info(inbox_messages)")}
+        if "payload" not in inbox_columns:
+            con.execute("ALTER TABLE inbox_messages ADD COLUMN payload TEXT")
         missing = COLUMNS - {row[1] for row in con.execute("PRAGMA table_info(messages)")}
         if missing:
             raise RuntimeError(f"{p} was written by a pre-release MISAKA (no {', '.join(sorted(missing))} "

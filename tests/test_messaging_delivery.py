@@ -37,3 +37,33 @@ def test_a_message_the_card_cannot_take_is_dropped(monkeypatch):
     monkeypatch.setattr(messages, "resolve_address",
                         lambda addr, **kw: (_ for _ in ()).throw(ValueError("not live")))
     assert delivery.deliver([item({"card": "t_c00003"})]) == ["m-1"]
+
+
+def test_a_human_message_is_a_user_prompt_not_peer_mail(monkeypatch):
+    from misaka.core import session_catalog, session_control
+
+    record = {"control": "/tmp/control.sock"}
+    monkeypatch.setattr(session_catalog, "live_instance_session", lambda iid: record)
+    seen = {}
+
+    async def enter(owner, operation, **kwargs):
+        seen.update(owner=owner, operation=operation, **kwargs)
+        return "delivered"
+
+    monkeypatch.setattr(session_control, "request", enter)
+    settled = delivery.deliver([{
+        "id": "m-human", "type": "human.message", "endpoint": "lo",
+        "content": {"text": "飞书来的问题"},
+    }])
+    assert settled == ["m-human"]
+    assert seen == {"owner": record, "operation": "input", "text": "飞书来的问题"}
+
+
+def test_a_human_message_without_a_live_lo_stays_unacknowledged(monkeypatch):
+    from misaka.core import session_catalog
+
+    monkeypatch.setattr(session_catalog, "live_instance_session", lambda iid: None)
+    assert delivery.deliver([{
+        "id": "m-human", "type": "human.message", "endpoint": "lo",
+        "content": {"text": "later"},
+    }]) == []

@@ -12,7 +12,7 @@ def connect(path):
         con = sqlite3.connect(path)
         con.execute("CREATE TABLE IF NOT EXISTS inbox_messages("
                     "id TEXT PRIMARY KEY, endpoint TEXT NOT NULL, source TEXT NOT NULL, "
-                    "received_at INTEGER NOT NULL, delivered_at INTEGER)")
+                    "received_at INTEGER NOT NULL, delivered_at INTEGER, payload TEXT)")
         return con
     return open_db
 
@@ -82,5 +82,17 @@ def test_a_bad_body_is_a_client_error(tmp_path):
     url = server.start()
     try:
         assert httpx.post(url, content=b"not json", timeout=5).status_code == 400
+    finally:
+        server.stop()
+
+
+def test_an_unsettled_batch_is_not_acknowledged(tmp_path):
+    inbox = Inbox(connect(tmp_path / "inbox.db"))
+    server = CallbackServer(inbox, lambda _batch: [])
+    url = server.start()
+    try:
+        response = httpx.post(url, json=batch("m-3"), timeout=5)
+        assert response.status_code == 503
+        assert [m["id"] for m in inbox.pending()] == ["m-3"]
     finally:
         server.stop()

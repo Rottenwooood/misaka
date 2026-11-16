@@ -27,11 +27,20 @@ class Inbox:
         con = self._connect()
         try:
             rows = con.execute(
-                "SELECT id, endpoint, source FROM inbox_messages "
+                "SELECT id, endpoint, source, payload FROM inbox_messages "
                 "WHERE delivered_at IS NULL ORDER BY received_at, id").fetchall()
         finally:
             con.close()
-        return [{"id": row[0], "endpoint": row[1], "source": row[2]} for row in rows]
+        out = []
+        for row in rows:
+            item = {"id": row[0], "endpoint": row[1], "source": row[2]}
+            if row[3]:
+                try:
+                    item.update(json.loads(row[3]))
+                except (TypeError, ValueError):
+                    pass
+            out.append(item)
+        return out
 
     def mark_delivered(self, ids: list[str]) -> None:
         if not ids:
@@ -65,10 +74,12 @@ class Inbox:
                     if not isinstance(item.get("type"), str) or not item["type"].strip():
                         raise BadDelivery("each message needs a type")
                     cursor = con.execute(
-                        "INSERT OR IGNORE INTO inbox_messages(id,endpoint,source,received_at) "
-                        "VALUES(?,?,?,strftime('%s','now'))",
+                        "INSERT OR IGNORE INTO inbox_messages"
+                        "(id,endpoint,source,received_at,payload) "
+                        "VALUES(?,?,?,strftime('%s','now'),?)",
                         (message_id, str(payload.get("endpoint") or ""),
-                         str(item.get("source") or "")),
+                         str(item.get("source") or ""),
+                         json.dumps(item, ensure_ascii=False)),
                     )
                     if cursor.rowcount == 1:
                         fresh.append(item)
@@ -108,7 +119,16 @@ class CallbackServer:
                     batch = {row["id"]: row for row in inbox.pending()}
                     batch.update({item["id"]: item for item in fresh})
                     if batch:
-                        inbox.mark_delivered(on_batch(list(batch.values())))
+                        settled = on_batch(list(batch.values()))
+                        inbox.mark_delivered(settled)
+                        if len(set(settled)) < len(batch):
+                            body = b'{"ok":false,"error":"not taken over"}'
+                            self.send_response(503)
+                            self.send_header("content-type", "application/json")
+                            self.send_header("content-length", str(len(body)))
+                            self.end_headers()
+                            self.wfile.write(body)
+                            return
                 except Exception:  # noqa: BLE001 - any failure must reach the centre as a retry
                     # Acknowledging before the work is done would lose the batch.
                     self.send_error(500, "not taken over")

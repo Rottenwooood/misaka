@@ -7,6 +7,7 @@ dropped, because a retry would only repeat the same mistake.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -47,6 +48,46 @@ def summary_of(item: dict) -> str:
     return f"{item.get('type')} from {item.get('source') or 'unknown'}"[:200]
 
 
+def human_text(item: dict) -> str:
+    """A Feishu/human delivery is input to a person's session, not peer mail."""
+    content = item.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        text = content.get("text")
+        if isinstance(text, str) and text.strip():
+            return text
+        return json.dumps(content, ensure_ascii=False)
+    return str(content or "")
+
+
+def deliver_human(item: dict) -> bool:
+    """Inject a human message into the live instance as a normal user prompt.
+
+    The centre owns durability. If the instance has no live session (or no session
+    control endpoint), return False so the caller keeps the batch unacknowledged.
+    """
+    from misaka.core import session_catalog, session_control
+
+    endpoint = str(item.get("endpoint") or "")
+    record = session_catalog.live_instance_session(endpoint)
+    if record is None or not record.get("control"):
+        logger.warning("human delivery %s has no live session for %s; left queued",
+                       item.get("id"), endpoint or "no endpoint")
+        return False
+    text = human_text(item)
+    if not text.strip():
+        logger.warning("human delivery %s has no text; left queued", item.get("id"))
+        return False
+    try:
+        asyncio.run(session_control.request(record, "input", text=text))
+    except (OSError, ValueError, TimeoutError) as error:
+        logger.warning("human delivery %s could not enter %s: %s",
+                       item.get("id"), endpoint, error)
+        return False
+    return True
+
+
 def deliver(items: list[dict]) -> list[str]:
     """Post each delivery to its card; returns the IDs that need no retry.
 
@@ -56,6 +97,10 @@ def deliver(items: list[dict]) -> list[str]:
     settled = []
     for item in items:
         message_id = str(item.get("id") or "")
+        if item.get("type") == "human.message" and not card_id(item):
+            if deliver_human(item):
+                settled.append(message_id)
+            continue
         address = card_id(item)
         if not address:
             endpoint = item.get("endpoint")
