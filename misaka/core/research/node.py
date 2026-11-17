@@ -151,7 +151,7 @@ class PaneRunner:
                 try:
                     await asyncio.to_thread(net.request, "pane.run_card", {
                         "task_id": tid,
-                        "place": {"grid": self.home}})
+                        "place": {"tab": self.home}})
                     self._said.pop(tid, None)
                 except (RuntimeError, OSError) as error:
                     if self._said.get(tid) != str(error):
@@ -164,7 +164,7 @@ class PaneRunner:
         from misaka.ui.panel import client as net
         await asyncio.to_thread(net.request, "pane.continue_card", {
             "task_id": task_id, "say": say, "expected_generation": expected_generation,
-            "place": {"grid": self.home}})
+            "place": {"tab": self.home}})
 
     async def stop(self, task_id, *, expected_generation=None, expected_claim_lock=None, research_owner=None, **_kwargs):
         from misaka.ui.panel import client as net

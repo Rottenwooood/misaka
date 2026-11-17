@@ -226,7 +226,7 @@ async def test_the_runners_continue_a_card_the_way_the_sister_tools_do(lab):
     lab.monkeypatch.setattr(net, "request", lambda method, params=None: sent.append((method, params)) or {})
     await node_module.PaneRunner(lab.con, {}, "root", "p1").continue_card("t_1", "go on", expected_generation=3)
     assert sent == [("pane.continue_card", {"task_id": "t_1", "say": "go on", "expected_generation": 3,
-                                            "place": {"grid": "p1"}})]
+                                            "place": {"tab": "p1"}})]
     headless = node_module.HeadlessRunner(lab.con, {})
     spawned = []
     lab.monkeypatch.setattr(headless._processes, "spawn", lambda argv, **k: spawned.append(argv) or SimpleNamespace(
