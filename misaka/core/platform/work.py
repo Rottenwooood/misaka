@@ -163,8 +163,19 @@ def instance_status(con, instance_id=None):
         ).fetchone()
         pid = row["writer_pid"] if processes.identity_is_alive(
             row["writer_pid"], row["writer_identity"]) else None
+        # A read-only viewer and an older session can be alive without the instance's
+        # writer pointer (the panel still sees them in its catalog). Include that live
+        # process so roster and panel do not disagree about who is running.
+        live_record = None
+        if pid is None:
+            from misaka.core import session_catalog
+            live_record = session_catalog.live_instance_session(row["id"])
+            if live_record and processes.identity_is_alive(
+                    live_record.get("pid"), live_record.get("identity")):
+                pid = live_record.get("pid")
         session = "live" if running else (
-            "idle" if (row["session_file"] or row["agent_id"] or row["writer_pid"]) else "none")
+            "idle" if (row["session_file"] or row["agent_id"] or row["writer_pid"]
+                       or live_record) else "none")
         result.append({
             "id": row["id"],
             "session": session,

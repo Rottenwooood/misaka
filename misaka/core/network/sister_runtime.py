@@ -201,7 +201,7 @@ class SisterRuntime:
         params = {"task_id": task_id, "owner_id": owner_id,
                   "expected_generation": expected_generation}
         if pane := os.environ.get("MISAKA_NET_PANE"):
-            params["place"] = {"grid": pane}
+            params["place"] = {"tab": pane}
         result = await self._request("pane.run_card", params)
         return self.snapshot(task_id, launched=True) | {"pane": result["pane_id"]}
 
@@ -220,7 +220,7 @@ class SisterRuntime:
             raise ValueError("User confirmation is required to start a new model turn")
         params = {"task_id": task_id, "say": message, "expected_generation": expected_generation}
         if pane := os.environ.get("MISAKA_NET_PANE"):
-            params["place"] = {"grid": pane}
+            params["place"] = {"tab": pane}
         await self._request("pane.continue_card", params)
         return {"success": True, "mode": "resume" if row["session_file"] else "first-attempt", **self.snapshot(task_id)}
 

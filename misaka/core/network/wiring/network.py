@@ -442,8 +442,8 @@ def _install(harn, runtime, owner_id=None):
                              "queue for misaka_task with action=start.")
         out = await asyncio.to_thread(
             net.request, "pane.open_card_session",
-            {"task_id": params.task_id, "place": {"grid": os.environ["MISAKA_NET_PANE"]}})
-        return _text(f"Card {params.task_id}'s saved session is in pane {out['pane_id']}, beside this one, "
+            {"task_id": params.task_id, "place": {"tab": os.environ["MISAKA_NET_PANE"]}})
+        return _text(f"Card {params.task_id}'s saved session is in pane {out['pane_id']}, in its own tab, "
                      "as a reader. To continue her, send the next instruction with misaka_sister_message "
                      "(confirmed=true); it takes that pane over.")
 

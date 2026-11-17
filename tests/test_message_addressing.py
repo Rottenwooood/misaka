@@ -173,7 +173,7 @@ async def test_a_last_order_message_to_a_closed_card_continues_her_session(world
     assert calls == [("pane.continue_card", {"task_id": done,
                                              "say": "[Message from last-order · session " + lo + ". If it asks you something, answer with SendMessage; a note that asks nothing needs no reply. Then complete the card again with misaka_card_complete -- your deliverable stands unless you change it.]\ndig into the 1803 budget",
                                              "expected_generation": 3, "consult": True,
-                                             "place": {"grid": "p1"}})]
+                                             "place": {"tab": "p1"}})]
     assert out["details"]["woken"] and out["details"]["pane_id"] == "p7"
     assert "woken in her own session" in out["content"][0]["text"]
     # B111: she can hear the answer inside the phase turn that has to end in its command.

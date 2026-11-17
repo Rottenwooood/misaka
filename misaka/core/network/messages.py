@@ -298,7 +298,7 @@ def wake_card(target, message):
     request = {"task_id": target["to_task"], "say": message,
                "expected_generation": target["generation"], "consult": True}
     if pane:
-        request["place"] = {"grid": pane}
+        request["place"] = {"tab": pane}
     return net.request("pane.continue_card", request)
 
 

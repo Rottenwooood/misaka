@@ -358,6 +358,13 @@ def install(collector, runtime, connection, owner_id):
             seen = set()
             targets = [(item["writer_pid"], item["writer_identity"])]
             targets += [(row["worker_pid"], row["worker_identity"]) for row in cards]
+            # The catalog can name a live read-only/older session whose writer pointer was
+            # never recorded on the instance row. Kill that process too; otherwise the
+            # panel still shows it after the roster says there is no writer.
+            from misaka.core import session_catalog
+            live_record = session_catalog.live_instance_session(command.id)
+            if live_record:
+                targets.append((live_record.get("pid"), live_record.get("identity")))
             for pid, identity in targets:
                 if pid and pid not in seen and processes.identity_is_alive(pid, identity):
                     seen.add(pid)

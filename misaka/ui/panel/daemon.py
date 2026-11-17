@@ -2116,10 +2116,22 @@ class Daemon:
                               "request_title": request_titles.get(r["request_id"]),
                               "has_session": transcript is not None, "session_file": transcript})
             from misaka.core import session_catalog
+            from misaka.core.platform import work
             paths = [(p.reported or {}).get("session") for p in getattr(self, "panes", {}).values()]
             entries = [entry for entry in session_catalog.list_entries(self._board(), extra_paths=paths)
                        if not workspace or entry["workspace"] == workspace]
-            return {"cards": cards, "sessions": entries}
+            # Instances are a separate inventory from sessions: an instance with no card and
+            # no transcript must still be visible in the panel, so the user can start it.
+            status = {row["id"]: row for row in work.instance_status(self._board())}
+            instances = []
+            for r in self._board().execute(
+                    "SELECT i.id,i.label,i.template_revision,t.role,i.last_active_at "
+                    "FROM instances i JOIN templates t ON t.id=i.template_id "
+                    "AND t.revision=i.template_revision WHERE i.retired=0 ORDER BY i.label,i.id"):
+                row = dict(r)
+                row.update(status.get(r["id"], {}))
+                instances.append(row)
+            return {"cards": cards, "sessions": entries, "instances": instances}
         if method == "card.delete":
             # A running card still occupies a pane: refuse and let the user stop it first (the panel uses card.stop).
             if any(p.card == params["task_id"] and p.alive()

@@ -1256,6 +1256,8 @@ def folder_groups(items):
 
 def session_key(action):
     """A canonical transcript path (or ephemeral inventory record), independent of kind."""
+    if action and action[0] == "instance-open":
+        return ("instance", action[1])
     return os.path.realpath(action[-1])
 
 def session_arg(argv):
@@ -1278,6 +1280,8 @@ def open_session_panes(listing):
         if pane.get("card"):
             live[("card", pane["card"])] = pane["id"]
         argv = list(pane.get("argv") or ())
+        if "--instance" in argv[:-1]:
+            live[("instance", argv[argv.index("--instance") + 1])] = pane["id"]
         path = (pane.get("reported") or {}).get("session") or session_arg(argv)
         if path:
             if {"--read-only", "--attach"} & set(argv):
@@ -1288,6 +1292,8 @@ def open_session_panes(listing):
 
 
 def session_pane_id(action, live):
+    if action and action[0] == "instance-open":
+        return live.get(("instance", action[1]))
     return live.get(session_key(action))
 
 
@@ -2082,7 +2088,7 @@ def launch():
                 })
         return rows or [{"kind": "empty", "label": "尚无任务"}]
 
-    cards_cache = {"items": [], "sessions": []}       # Board cards and the unified session inventory
+    cards_cache = {"items": [], "sessions": [], "instances": []}  # Board cards, sessions and every instance
     sessions_cache = {"rows": []}     # the sidebar draws from here: scanning on every frame would stat the disk per keystroke
     sess_folds = set()                # session groups start open; a click folds one
     meta_cache = {}
@@ -2090,7 +2096,8 @@ def launch():
     def refresh_cards():
         try:
             response = control.request("cards.list")
-            cards_cache.update(items=response["cards"], sessions=response["sessions"])
+            cards_cache.update(items=response["cards"], sessions=response["sessions"],
+                           instances=response.get("instances", []))
         except (RuntimeError, OSError):
             pass
 
@@ -2242,6 +2249,25 @@ def launch():
                    "folder": entry["workspace"], "_t": stamp, "session_kind": kind,
                    "parent": meta.get("parent"), "action": ("sess-open", path or entry["catalog_file"])}
             (lo if role == "last-order" else others).append(row)
+        # Instances are inventory, not sessions. Show one that has neither a live nor a saved
+        # conversation, otherwise "no cards" would make it invisible in the panel.
+        represented = {entry.get("instance_id") for entry in cards_cache["sessions"]
+                       if entry.get("instance_id")}
+        folder = (active_space() or {}).get("folder") or os.getcwd()
+        for item in cards_cache.get("instances", []):
+            if item["id"] in represented:
+                continue
+            role_name = item.get("role") or "sister"
+            state = item.get("session") or "none"
+            when = session_stamp(item["last_active_at"]) if item.get("last_active_at") else "instance"
+            row = {
+                "kind": "item", "label": f"{role_name} · {item.get('label') or item['id']} [instance]",
+                "when": when, "folder": folder, "_t": item.get("last_active_at") or 0,
+                "session_kind": "instance", "instance_id": item["id"],
+                "action": ("instance-open", item["id"]), "state": state,
+                "live_key": ("instance", item["id"]),
+            }
+            (lo if role_name == "last-order" else others).append(row)
         lo.sort(key=lambda item: -item["_t"])
         others.sort(key=lambda item: -item["_t"])
         if everything:
@@ -2288,6 +2314,16 @@ def launch():
         nonlocal listing
         from misaka.core import session_catalog
         row = session_row(hit)
+        if row and row.get("session_kind") == "instance":
+            iid = row["instance_id"]
+            open_pane = session_pane(hit)
+            if open_pane:
+                focus(open_pane)
+                return
+            place = {"tab": focused} if focused else {"space": True}
+            new_pane([sys.executable, "-m", "misaka", "chat", "--instance", iid],
+                     row["label"], place=place, cwd=row.get("folder"))
+            return
         access = session_access(row or {})
         open_pane = session_pane(hit)
         if open_pane:
@@ -2407,8 +2443,8 @@ def launch():
     def menu_choose(index):
         name = menu["items"][index]
         close_menu()
-        if name != "no sisters":   # A Sister joins the focused pane's tab as a grid pane.
-            new_pane([sys.executable, "-m", "misaka", "chat", "--instance", name], name, place={"grid": focused})
+        if name != "no sisters":   # A Sister gets her own tab; do not split the main view.
+            new_pane([sys.executable, "-m", "misaka", "chat", "--instance", name], name, place={"tab": focused})
 
     def menu_key(key):
         """herdr modal.rs:147-160 handle_global_menu_key: esc closes, k/up and j/down move, enter picks."""
