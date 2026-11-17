@@ -245,11 +245,9 @@ def _roster_view(con, instance_id=None, *, include_config=False):
             continue
         row = {key: item[key] for key in ("id", "label", "template_id", "template_revision")
                if item.get(key) is not None}
-        if subscriptions := work.instance_specs(item["subscriptions"]):
-            row["subscriptions"] = subscriptions
+        row["subscriptions"] = work.instance_specs(item["subscriptions"])
         row.update({key: value for key, value in status.get(item["id"], {}).items()
-                    if key not in ("pid", "running_card", "last_active_at")
-                    or value is not None})
+                    if key not in ("pid", "last_active_at") or value is not None})
         if item.get("retired"):
             row["retired"] = True
         instances.append(row)

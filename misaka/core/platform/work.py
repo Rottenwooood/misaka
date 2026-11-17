@@ -790,14 +790,11 @@ def owned_state(con, owner, request_id=None, *, include_body=False):
         if row["source_card_id"]:
             card["source_card_id"] = row["source_card_id"]
         card["instance"] = row["instance_id"]
-        if needs := tasks.parent_ids(con, row["id"]):
-            card["needs"] = needs
+        card["needs"] = tasks.parent_ids(con, row["id"])
         if scoped := json.loads(row["fs_scope"] or "[]"):
             card["fs_scope"] = scoped
-        if forbidden := json.loads(row["forbidden_commands"] or "[]"):
-            card["forbidden_commands"] = forbidden
-        if subscriptions := json.loads(row["subscriptions"] or "[]"):
-            card["subscriptions"] = subscriptions
+        card["forbidden_commands"] = json.loads(row["forbidden_commands"] or "[]")
+        card["subscriptions"] = json.loads(row["subscriptions"] or "[]")
         if row["block_reason"]:
             card["blocked"] = row["block_reason"]
         cards.append(card)

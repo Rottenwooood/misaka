@@ -399,7 +399,9 @@ def test_a_show_omits_bodies_and_runtime_noise_unless_asked():
             plain = work.owned_state(con, "lo", "req")
             full = work.owned_state(con, "lo", "req", include_body=True)
         assert set(plain["request"]) == {"id", "title", "workspace", "revision"}
-        assert "needs" not in plain["cards"][0]
+        assert plain["cards"][0]["needs"] == []
+        assert plain["cards"][0]["forbidden_commands"] == []
+        assert plain["cards"][0]["subscriptions"] == []
         assert "body" not in plain["cards"][0]
         assert "completion_count" not in plain["cards"][0]
         assert full["request"]["body"] == ""

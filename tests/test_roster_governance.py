@@ -118,8 +118,8 @@ def test_the_roster_tool_returns_session_state_and_manages_subscriptions():
                 None, None, None)))
             assert shown["instances"][0]["session"] == "idle"
             assert "pid" not in shown["instances"][0]
-            assert "running_card" not in shown["instances"][0]
-            assert "subscriptions" not in shown["instances"][0]
+            assert shown["instances"][0]["running_card"] is None
+            assert shown["instances"][0]["subscriptions"] == []
             added = _payload(asyncio.run(tools["misaka_roster"].execute(
                 "call", {"command": {"action": "subscriptions", "id": "worker",
                                      "op": "add",
