@@ -114,7 +114,7 @@ def test_the_roster_tool_returns_session_state_and_manages_subscriptions():
                             (str(s.project / "session.json"),))
             coordination.install(Harness(), object(), lambda: con, "lo")
             shown = _payload(asyncio.run(tools["misaka_roster"].execute(
-                "call", {"command": {"action": "show", "instance_id": "worker"}},
+                "call", {"command": {"action": "show", "kind": "instance", "id": "worker"}},
                 None, None, None)))
             assert shown["instances"][0]["session"] == "idle"
             assert "pid" not in shown["instances"][0]
@@ -230,7 +230,9 @@ def test_roster_config_is_opt_in():
              "template_revision": 1},
         ])
         with closing(tasks.connect(s.database)) as con:
-            assert "config" not in _roster_view(con)["templates"][0]
-            assert _roster_view(con, include_config=True)["templates"][0]["config"]["system"] == "BASE"
+            assert "config" not in _roster_view(con, "template")["templates"][0]
+            assert _roster_view(con, "template", detail=True)["templates"][0]["config"]["system"] == "BASE"
+            instance = _roster_view(con, "instance", "worker", detail=True)["instances"][0]
+            assert instance["config"]["system"] == "BASE"
     finally:
         s.close()

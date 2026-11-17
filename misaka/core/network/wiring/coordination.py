@@ -102,9 +102,12 @@ class TaskParams(Command):
 
 class ShowRoster(Command):
     action: Literal["show"]
-    instance_id: str | None = None
-    include_config: bool = Field(
-        False, description="Include each latest template's full configuration; status queries can omit it.")
+    kind: Literal["instance", "template"] = Field(
+        "instance", description="Query instances or templates.")
+    id: str | None = Field(
+        None, description="One instance id when kind=instance, or one template id when kind=template; omit for all.")
+    detail: bool = Field(
+        False, description="Include full configuration; for an instance, the config of the template revision it pins.")
 
 
 class SessionConfig(Command):
@@ -225,33 +228,50 @@ def _data(label, value):
             "details": {}}
 
 
-def _roster_view(con, instance_id=None, *, include_config=False):
-    """Latest node per template and the instances with their live session state."""
+def _roster_view(con, kind="instance", target_id=None, *, detail=False):
+    """One kind of roster entry: all of it, or the one named by ``target_id``.
+
+    A template query returns each template's latest revision. An instance query
+    returns the template revision that instance actually pins, and ``detail`` adds
+    that revision's configuration rather than a possibly newer template's.
+    """
     state = work.roster(con)
-    latest = {}
-    for node in state["templates"]:
-        if node["id"] not in latest or node["revision"] > latest[node["id"]]["revision"]:
-            latest[node["id"]] = node
-    templates = []
-    for node in latest.values():
-        row = {key: node[key] for key in ("id", "revision", "role")}
-        if include_config and node.get("config"):
-            row["config"] = node["config"]
-        templates.append(row)
-    status = {row["id"]: row for row in work.instance_status(con, instance_id)}
+    if kind == "template":
+        latest = {}
+        for node in state["templates"]:
+            if node["id"] not in latest or node["revision"] > latest[node["id"]]["revision"]:
+                latest[node["id"]] = node
+        templates = []
+        for node in latest.values():
+            if target_id is not None and node["id"] != target_id:
+                continue
+            row = {key: node[key] for key in ("id", "revision", "role")}
+            if detail:
+                row["config"] = node.get("config") or {}
+            templates.append(row)
+        if target_id is not None and not templates:
+            raise ValueError(f"Template not found: {target_id}")
+        return {"templates": templates}
+
+    status = {row["id"]: row for row in work.instance_status(con, target_id)}
     instances = []
     for item in state["instances"]:
-        if instance_id is not None and item["id"] != instance_id:
+        if target_id is not None and item["id"] != target_id:
             continue
         row = {key: item[key] for key in ("id", "label", "template_id", "template_revision")
                if item.get(key) is not None}
         row["subscriptions"] = work.instance_specs(item["subscriptions"])
+        if detail:
+            row["role"] = item["role"]
+            row["config"] = item["config"]
         row.update({key: value for key, value in status.get(item["id"], {}).items()
                     if key not in ("pid", "last_active_at") or value is not None})
         if item.get("retired"):
             row["retired"] = True
         instances.append(row)
-    return {"templates": templates, "instances": instances}
+    if target_id is not None and not instances:
+        raise ValueError(f"Instance not found: {target_id}")
+    return {"instances": instances}
 
 
 def install(collector, runtime, connection, owner_id):
@@ -521,10 +541,12 @@ def install(collector, runtime, connection, owner_id):
 
     @toolkit.register_tool(
         collector, name="misaka_roster", label="Manage templates and instances",
-        description="Read the roster and each instance's session state; show omits template "
-                    "configurations unless include_config is true. Create or revise templates; "
-                    "register or stop an instance; manage its long-lived subscriptions; delete "
-                    "instances or template revisions in bulk. These operations do not launch models.",
+        description="Read either instances or templates: kind=instance with id for one instance "
+                    "or without id for all; kind=template with id for one template or without id "
+                    "for all latest templates. detail=true includes full configuration; an instance "
+                    "shows the configuration of the template revision it pins. Create or revise "
+                    "templates; register or stop an instance; manage its long-lived subscriptions; "
+                    "delete instances or template revisions in bulk. These operations do not launch models.",
         parameters=RosterParams, schema=_command_schema,
     )
     async def roster(tool_call_id, params, signal, on_update, ctx):
@@ -533,7 +555,7 @@ def install(collector, runtime, connection, owner_id):
         actor(con)
         if isinstance(command, ShowRoster):
             return _data("roster", _roster_view(
-                con, command.instance_id, include_config=command.include_config))
+                con, command.kind, command.id, detail=command.detail))
         if isinstance(command, Subscriptions):
             return _data("instance-subscriptions", subscription_view(con, command))
         if isinstance(command, StopInstance):
