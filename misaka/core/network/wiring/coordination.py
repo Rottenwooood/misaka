@@ -1,13 +1,19 @@
 """Instance-owned orchestration tools for ordinary work."""
 import asyncio
+import hashlib
 import json
+import logging
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from misaka.core.platform import instances, processes, tasks, toolkit, usage, work
 from misaka.core.platform.prompt_guard import untrusted
+from misaka.utils import atomic
 from misaka.utils.redact import redact
+
+logger = logging.getLogger(__name__)
 
 CardId = Annotated[str, Field(pattern=work.CARD_ID_PATTERN)]
 
@@ -186,6 +192,15 @@ class BulkDelete(Command):
 class RosterParams(Command):
     command: Annotated[ShowRoster | CreateTemplate | ReviseTemplate | CreateInstance | Subscriptions
                        | StopInstance | BulkDelete, Field(discriminator="action")]
+
+
+class ProjectBriefParams(Command):
+    request_id: str = Field(description="The work request whose workspace owns PROJECT.md.")
+    content: str = Field(min_length=1, description="The complete new PROJECT.md text, as Markdown.")
+    confirm: bool = Field(
+        False, description="Set true only after the user explicitly approves changing the project brief.")
+    expected_sha256: str | None = Field(
+        None, description="Optional digest of the current PROJECT.md to refuse an overwrite after an edit.")
 
 
 class UsageParams(Command):
@@ -493,6 +508,39 @@ def install(collector, runtime, connection, owner_id):
                 receipt = {"task_id": card_id, "status": "error", "error": str(error)}
             receipts.append({"id": card_id, "state": receipt.get("status")})
         return _data("launch-receipts", receipts)
+
+    @toolkit.register_tool(
+        collector, name="misaka_project_brief", label="Update project brief",
+        description="Replace PROJECT.md in the workspace of one of your work requests. "
+                    "Use only after explicit user approval. This tool never writes AGENTS.md "
+                    "or CLAUDE.md and cannot write outside that workspace.",
+        parameters=ProjectBriefParams,
+    )
+    async def project_brief(tool_call_id, params, signal, on_update, ctx):
+        con = connection()
+        owner = actor(con)
+        request = work.owned_request(con, owner, params.request_id)
+        if not params.confirm:
+            raise ValueError("Changing PROJECT.md needs explicit user approval; set confirm=true only after it")
+        workspace = Path(request["workspace"]).resolve()
+        if not workspace.is_dir():
+            raise ValueError(f"Project workspace no longer exists: {workspace}")
+        target = workspace / "PROJECT.md"
+        if target.is_symlink():
+            raise ValueError(f"Refusing to replace a symlinked PROJECT.md: {target}")
+        if params.expected_sha256 and target.is_file():
+            current = hashlib.sha256(target.read_bytes()).hexdigest()
+            if current != params.expected_sha256:
+                raise ValueError(
+                    "PROJECT.md changed since it was read; reread it and retry with the new digest")
+        atomic.write_text(str(target), params.content)
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        logger.info("project brief updated request=%s workspace=%s bytes=%d",
+                    params.request_id, workspace, len(params.content.encode("utf-8")))
+        return _data("project-brief", {
+            "request_id": params.request_id, "workspace": str(workspace),
+            "path": str(target), "bytes": len(params.content.encode("utf-8")), "sha256": digest,
+        })
 
     @toolkit.register_tool(
         collector, name="misaka_usage", label="Read usage",

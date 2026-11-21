@@ -24,6 +24,7 @@ SISTER_TOOLS = {
                               "Reply to a parked card's help request here, not through SendMessage; "
                               "observe the tool's confirmation requirement for completed tasks."),
     "misaka_sister_output": "Read or wait for a card's result, then assess its evidence, deliverables and acceptance criteria.",
+    "misaka_project_brief": "Replace PROJECT.md in a request workspace after explicit user approval; it does not touch AGENTS.md or CLAUDE.md.",
     "misaka_sister_peek": "Inspect recent output for diagnosis, not as proof of completion or acceptance.",
     "misaka_sister_stop": "Stop the identified task through its lifecycle control, not by sending a conversational request.",
     "misaka_pane_list": "See the panes in your tab of the panel and which of them may be closed.",

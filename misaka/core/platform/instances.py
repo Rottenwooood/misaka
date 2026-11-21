@@ -32,7 +32,7 @@ CONFIG_KEYS = frozenset({"system", "model", "thinking", "tools", "skills", "sett
 # A Sister's entry is None: every tool its role provides.
 DEFAULT_TOOLS = {
     "last-order": ("misaka_task", "misaka_roster", "misaka_usage", "misaka_context",
-                   "misaka_skill", "SendMessage", "misaka_sister_peek"),
+                   "misaka_skill", "misaka_project_brief", "SendMessage", "misaka_sister_peek"),
 }
 
 
