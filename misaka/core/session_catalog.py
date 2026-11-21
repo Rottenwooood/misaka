@@ -192,6 +192,21 @@ def live_readers(inbox, space):
     return list(found.values())
 
 
+def live_role(role, space=None):
+    """Live sessions of a role, optionally in one space.
+
+    Roles and inbox names are not always identical: Last Order's role is ``last-order``
+    while its inbox is ``lo``. Addressing by role must not depend on that spelling.
+    """
+    found = {}
+    for value in _live_records():
+        if (value.get("role") == role
+                and (space is None or value.get("space") == space)
+                and value.get("id")):
+            found.setdefault(value["id"], value)
+    return list(found.values())
+
+
 def live_contact(role):
     """Whether ``role``'s contact session (``misaka dm``) is running a turn right now."""
     return any(value.get("kind") == "dm" and value.get("inbox") == role for value in _live_records())

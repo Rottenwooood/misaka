@@ -778,8 +778,9 @@ class NetworkPart:
         self.session = None
         self.commands = []
         self.receive_notifications = receive_notifications
+        self.owner_id = owner_id
         self._pending_watch = None
-        self.runtime = SisterRuntime(None, _con)
+        self.runtime = SisterRuntime(None, _con, owner_id=owner_id)
         collector = ToolCollector()
         _install(collector, self.runtime, owner_id)
         self.tools = collector.tools

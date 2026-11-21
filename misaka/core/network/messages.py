@@ -388,9 +388,16 @@ def resolve_address(addr, *, sender, space=None, sender_task=None, sender_sessio
         mine = _node_last_order(sender_task=sender_task, sender_session=sender_session)
         if mine is not None:
             return mine
-    readers = [record for record in (session_catalog.live_readers(addr, space) if space else [])
+    readers = [record for record in session_catalog.live_role(addr, space)
                if record.get("id") != sender_session
                and not (sender_task and record.get("task_id") == sender_task)]
+    if not readers and addr == "last-order":
+        # A Sister may live in a different panel space from the one Last Order opened.
+        # There is one Last Order by design; a name still means her when the local space
+        # has no reader. Several live Last Orders remain ambiguous and are refused below.
+        readers = [record for record in session_catalog.live_role("last-order")
+                   if record.get("id") != sender_session
+                   and not (sender_task and record.get("task_id") == sender_task)]
     if readers:
         board = tasks.connect(_board_path())
         try:

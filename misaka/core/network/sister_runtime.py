@@ -183,9 +183,10 @@ def _sister_notification(data: Mapping[str, Any]) -> str:
 
 
 class SisterRuntime:
-    def __init__(self, session, con_factory):
+    def __init__(self, session, con_factory, owner_id=None):
         self.session = session
         self._con_factory = con_factory
+        self.owner_id = owner_id
 
     @property
     def con(self):
@@ -305,10 +306,16 @@ class SisterRuntime:
                     context = contexts.get(event["resource_id"])
                     routed = (context is not None and context["run_id"] == run_id) if run_id else (
                         row is not None and context is None and db.workspace_for(row) == workspace)
-                    if row is not None and routed:
+                    if row is not None:
                         generation, status = int(payload.get("generation") or 0), str(payload.get("status") or "")
                         routed = (generation == int(row["generation"]) and status == row["status"]
                                   and status in TERMINAL_BOARD_STATUSES)
+                        if routed and self.owner_id is not None and run_id is None:
+                            owner = self.con.execute(
+                                "SELECT owner_id FROM work_requests WHERE id=?",
+                                (row["request_id"],),
+                            ).fetchone()
+                            routed = bool(owner and owner["owner_id"] == self.owner_id)
                 else:
                     progress = (event["resource_type"] == "research" and event["kind"] == "progress"
                                 and event["resource_id"] == run_id)
