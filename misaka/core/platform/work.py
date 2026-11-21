@@ -817,6 +817,7 @@ def save_plan(con, owner, request_id, *, expected_revision=None, workspace=None,
     from misaka.core.platform import tasks
 
     with tasks.write_txn(con):
+        workspace_changed = False
         if expected_revision is None:
             current, = apply(con, [{"op": "request.create", "id": request_id, "owner_id": owner,
                                     "workspace": workspace, "title": title, "body": body or ""}])
@@ -824,13 +825,35 @@ def save_plan(con, owner, request_id, *, expected_revision=None, workspace=None,
             current = owned_request(con, owner, request_id)
             _revision(con, request_id, expected_revision)
             if workspace is not None:
-                raise ValueError("An existing request cannot change its project directory")
+                # A request's folder is ordinary configuration, not an immutable identity.
+                # Active cards are the exception: their process is already running in the old
+                # folder, so moving the record underneath it would lie about where work happened.
+                new_workspace = str(Path(workspace).expanduser().resolve())
+                if new_workspace != current["workspace"]:
+                    active = con.execute(
+                        "SELECT id,status FROM tasks WHERE request_id=? "
+                        "AND status IN ('running','review') ORDER BY id",
+                        (request_id,),
+                    ).fetchall()
+                    if active:
+                        raise ValueError(
+                            "Stop running or review cards before changing the request's workspace: "
+                            + ", ".join(f"{row['id']} ({row['status']})" for row in active)
+                        )
+                    con.execute("UPDATE work_requests SET workspace=? WHERE id=?",
+                                (new_workspace, request_id))
+                    # The card rows are a denormalized copy used by dispatch, card panes and
+                    # artifact resolution; keep them on the request's new folder.
+                    con.execute("UPDATE tasks SET workspace=? WHERE request_id=?",
+                                (new_workspace, request_id))
+                    current = request(con, request_id)
+                    workspace_changed = True
         if cards:
             ordinary_cards(con, [card["id"] for card in cards] +
                            [parent for card in cards for parent in (card.get("needs") or [])])
             current = update_plan(con, request_id, current["revision"], cards)
-        if expected_revision is not None and (title is not None or body is not None):
-            # A single save increments the revision once, even if it edits both metadata and cards.
+        if expected_revision is not None and (title is not None or body is not None or workspace_changed):
+            # A single save increments the revision once, even if it edits metadata, folder and cards.
             con.execute(
                 "UPDATE work_requests SET title=?,body=?,revision=? WHERE id=?",
                 (_text(title, "title") if title is not None else current["title"],

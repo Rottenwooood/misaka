@@ -17,6 +17,7 @@ import re
 import secrets
 import signal
 import socket
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -1596,7 +1597,23 @@ class Daemon:
 
     # ── Card panes (driven by the board state machine) ──────────
 
+    @staticmethod
+    def _usable(con):
+        """Drop a connection another error path closed instead of caching it forever."""
+        if con is None:
+            return None
+        try:
+            con.execute("SELECT 1").fetchone()
+            return con
+        except sqlite3.ProgrammingError:
+            try:
+                con.close()
+            except sqlite3.Error:
+                pass
+            return None
+
     def _board(self):
+        self._con = self._usable(self._con)
         if self._con is None:
             from misaka.core.platform import tasks as db
             self._con = db.connect(_expand(CFG["db"]))
@@ -1609,6 +1626,7 @@ class Daemon:
         rows, GROUP BY, close -- and the panel calls `panes.list` on every poll, on the
         daemon's single event loop (audit 2026-09-02, ui-panel-08).
         """
+        self._mcon = self._usable(self._mcon)
         if self._mcon is None:
             from misaka.core.network import messages
             self._mcon = messages.connect()
