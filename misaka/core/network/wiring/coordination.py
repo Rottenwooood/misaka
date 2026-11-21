@@ -522,7 +522,7 @@ def install(collector, runtime, connection, owner_id):
         con = connection()
         owner = actor(con)
         target = params.instance_id or owner
-        action = HistoryIsolation(lambda: con)
+        action = HistoryIsolation(lambda: con, owns_connection=False)
         if params.action == "list":
             return _data("history-isolations", action.list(target))
         return _data("history-isolation", action.isolate(target, params.label))

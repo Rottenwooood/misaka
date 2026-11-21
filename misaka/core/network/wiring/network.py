@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import secrets
+import sqlite3
 from types import SimpleNamespace
 from typing import Annotated, Literal
 
@@ -77,6 +78,16 @@ def _cfg():
 
 def _con():
     global _CON
+    if _CON is not None:
+        try:
+            _CON.execute("SELECT 1").fetchone()
+            return _CON
+        except sqlite3.ProgrammingError:
+            try:
+                _CON.close()
+            except sqlite3.Error:
+                pass
+            _CON = None
     if _CON is None:
         _CON = db.connect(CFG["db"])
     return _CON

@@ -5,6 +5,7 @@ import asyncio
 import os
 import re
 import shlex
+import sqlite3
 import time
 
 from misaka.config import CFG, current_config
@@ -108,6 +109,16 @@ USAGE = (
 
 def _con():
     global _CON
+    if _CON is not None:
+        try:
+            _CON.execute("SELECT 1").fetchone()
+            return _CON
+        except sqlite3.ProgrammingError:
+            try:
+                _CON.close()
+            except sqlite3.Error:
+                pass
+            _CON = None
     if _CON is None:
         _CON = task_store.connect(CFG["db"])
         runs.init(_CON)

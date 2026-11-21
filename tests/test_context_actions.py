@@ -98,3 +98,21 @@ def test_an_answer_to_a_parked_card_starts_it_again():
         if con is not None:
             con.close()
         s.close()
+
+
+def test_isolation_does_not_close_a_caller_owned_board():
+    from misaka.core.platform import tasks
+
+    s = Scenario()
+    try:
+        s.apply([
+            {"op": "template.create", "id": "lo", "role": "last-order", "config": {}},
+            {"op": "instance.create", "id": "lo", "template_id": "lo", "template_revision": 1},
+        ])
+        con = tasks.connect(s.database)
+        action = HistoryIsolation(lambda: con, owns_connection=False)
+        assert action.list("lo") == []
+        assert con.execute("SELECT count(*) FROM instances").fetchone()[0] == 1
+        con.close()
+    finally:
+        s.close()

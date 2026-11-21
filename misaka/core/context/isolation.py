@@ -14,8 +14,14 @@ from misaka.core.platform import tasks as board
 
 
 class HistoryIsolation:
-    def __init__(self, connect=None):
+    def __init__(self, connect=None, *, owns_connection=True):
         self._connect = connect or (lambda: board.connect(str(home.path("db"))))
+        self._owns_connection = owns_connection
+
+    def _close(self, con):
+        """Close only a connection this object opened; a tool may hand us the shared board."""
+        if self._owns_connection:
+            con.close()
 
     def isolate(self, instance_id: str, label: str | None = None) -> dict:
         con = self._connect()
@@ -32,7 +38,7 @@ class HistoryIsolation:
                 )
             return {"instance_id": instance_id, "label": name, "session_epoch": after["session_epoch"]}
         finally:
-            con.close()
+            self._close(con)
 
     def list(self, instance_id: str) -> list[dict]:
         con = self._connect()
@@ -42,4 +48,4 @@ class HistoryIsolation:
                 "WHERE instance_id=? ORDER BY epoch", (instance_id,)).fetchall()
             return [dict(row) for row in rows]
         finally:
-            con.close()
+            self._close(con)
