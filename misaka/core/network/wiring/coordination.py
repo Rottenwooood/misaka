@@ -35,7 +35,10 @@ class PlanCard(Command):
     body: str | None = Field(None, description="The card body, as Markdown.")
     instance: str | None = Field(None, description="The Sister instance this card runs on.")
     completion: Literal["once", "repeat_keep", "repeat_clear"] | None = Field(
-        None, description="once; repeat_keep; or repeat_clear (needs a fresh instance).")
+        None, description="once; repeat_keep; or repeat_clear. Fixed after creation.")
+    priority: int | None = Field(None, description="Scheduling priority; higher runs first.")
+    model: str | None = Field(None, description="provider/model override for this card.")
+    reviewer: str | None = Field(None, description="Independent reviewer Sister ID; null clears it.")
     needs: list[CardId] | None = None
     fs_scope: list[str] | None = Field(None, description="Paths this card may touch.")
     forbidden_commands: list[str] | None = Field(None, description="Command patterns this card must not run.")
@@ -49,7 +52,7 @@ class SavePlan(Command):
     workspace: str | None = Field(None, description="Project directory, required for a new request.")
     title: str | None = None
     body: str | None = None
-    cards: list[PlanCard] = Field(default_factory=list, description="New cards and patches to unstarted cards; omitted fields are unchanged.")
+    cards: list[PlanCard] = Field(default_factory=list, description="New cards and patches to editable cards; omitted fields are unchanged.")
 
 
 class ResumeCards(Command):

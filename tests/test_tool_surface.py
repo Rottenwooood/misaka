@@ -70,7 +70,7 @@ def test_the_tool_schemas_name_one_thing_once():
     assert set(AskParams.model_fields) == {"to", "message"}
     card = tools.PlanCard.model_fields
     assert "instance" in card and "instance_id" not in card
-    assert "priority" not in card and "reviewer" not in card and "model" not in card
+    assert {"priority", "reviewer", "model"} <= set(card)
     assert "cancel" not in card
     assert tools.DispatchCard.model_fields["generation"].is_required() is False
     assert "role" not in tools.CreateInstance.model_fields or (
