@@ -1722,7 +1722,14 @@ class Daemon:
         empties the window it was not given."""
         from misaka.core.platform import tasks as db
         leaving = []
-        for pane in [p for p in self.panes.values() if p.card and db.get(con, p.card)["instance_id"] == row["instance_id"] and p is not keep]:
+        for pane in list(self.panes.values()):
+            if not pane.card or pane is keep:
+                continue
+            card = db.get(con, pane.card)
+            # A pane can outlive a card that was hard-deleted. It is stale, not a reason to
+            # crash the next start on the same instance; close it with the other old panes.
+            if card is not None and card["instance_id"] != row["instance_id"]:
+                continue
             leaving.append(pane.proc)
             self.close(pane.id)          # SIGTERM now; `_reap` escalates off the request
         if keep is not None:
